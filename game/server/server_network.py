@@ -39,7 +39,7 @@ class ServerNetwork:
         try:
             data = conn.recv(8192)
             if not data:
-                return messages, buffer
+                raise ConnectionResetError("Client disconnected")
             buffer += data.decode("utf-8")
         except BlockingIOError:
             return messages, buffer

@@ -23,6 +23,10 @@ class Player:
     width: int = field(default=PLAYER_SIZE[0])
     height: int = field(default=PLAYER_SIZE[1])
     on_ladder: bool = False
+    facing: int = 1
+    charmed_by: str | None = None
+    charm_timer: float = 0.0
+    charm_level: int = 0
 
     def to_dict(self) -> dict:
         """Convert to a JSON-friendly dictionary for networking."""
@@ -36,4 +40,8 @@ class Player:
             "w": self.width,
             "h": self.height,
             "on_ladder": self.on_ladder,
+            "facing": self.facing,
+            "charmed_by": self.charmed_by,
+            "charm_timer": self.charm_timer,
+            "charm_level": self.charm_level,
         }

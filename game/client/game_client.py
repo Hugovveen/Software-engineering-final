@@ -6,6 +6,8 @@ rendering, and systems are separated into small modules.
 
 from __future__ import annotations
 
+import time
+
 import pygame
 
 from client.client_network import ClientNetwork
@@ -31,6 +33,37 @@ class GameClient:
 
         self.self_id: str | None = None
         self.game_state: dict = {"players": [], "mimic": {}, "map": {}}
+        self.recent_events: list[dict] = []
+
+    def _push_event(self, text: str, ttl: float = 3.0) -> None:
+        self.recent_events.append(
+            {
+                "text": text,
+                "expires_at": time.perf_counter() + max(0.1, ttl),
+            }
+        )
+        if len(self.recent_events) > 12:
+            self.recent_events = self.recent_events[-12:]
+
+    def _ingest_gameplay_events(self, events: list[dict]) -> None:
+        for event in events:
+            event_type = str(event.get("type", ""))
+            if event_type == "PLAYER_CHARMED":
+                self._push_event(
+                    f"Player {event.get('player_id', '?')} charmed (L{event.get('charm_level', 0)})",
+                    ttl=3.0,
+                )
+            elif event_type == "SIREN_PULSE":
+                target_count = len(event.get("target_ids", []))
+                self._push_event(f"Siren pulse hit {target_count} target(s)", ttl=3.0)
+            elif event_type == "ENEMY_ATTACK":
+                enemy_type = str(event.get("enemy_type", "enemy"))
+                target_id = event.get("target_id") or "?"
+                self._push_event(f"{enemy_type} attacking {target_id}", ttl=2.0)
+
+    def _prune_events(self) -> None:
+        now = time.perf_counter()
+        self.recent_events = [event for event in self.recent_events if float(event.get("expires_at", 0.0)) > now]
 
     def _send_join(self) -> None:
         self.network.send({"type": "PLAYER_JOIN", "name": "Student"})
@@ -64,8 +97,13 @@ class GameClient:
             msg_type = msg.get("type")
             if msg_type == "PLAYER_JOIN":
                 self.self_id = msg.get("id")
+            elif msg_type == "PLAYER_CONNECTED":
+                self._push_event(f"{msg.get('name', 'Player')} joined", ttl=2.0)
+            elif msg_type == "PLAYER_DISCONNECTED":
+                self._push_event(f"{msg.get('name', 'Player')} left", ttl=2.0)
             elif msg_type == "GAME_STATE":
                 self.game_state = msg
+                self._ingest_gameplay_events(list(msg.get("events", [])))
 
     def _update_camera(self) -> None:
         if not self.self_id:
@@ -96,8 +134,16 @@ class GameClient:
             # Send input to server each frame for simple responsiveness.
             self.network.send(self._build_input_message())
             self._handle_network_messages()
+            self._prune_events()
             self._update_camera()
-            self.renderer.draw(screen, self.camera, self.game_state, self.self_id, dt)
+            self.renderer.draw(
+                screen,
+                self.camera,
+                self.game_state,
+                self.self_id,
+                dt,
+                recent_events=self.recent_events,
+            )
 
             if dt > 0:
                 pass  # Placeholder for future local interpolation systems.
