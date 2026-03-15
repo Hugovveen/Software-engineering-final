@@ -21,7 +21,7 @@ class Renderer:
     PLAYER_COLOR = (90, 170, 255)
     SELF_COLOR = (90, 255, 160)
     MIMIC_COLOR = (220, 60, 90)
-    ENTITY_RENDER_SCALE = 2.2
+    ENTITY_RENDER_SCALE = 5.0
     TILE_SIZE = 64
 
     def __init__(self) -> None:
@@ -32,6 +32,7 @@ class Renderer:
         self.facing_by_entity: dict[str, int] = {}
         self.floor_texture: pygame.Surface | None = None
         self.wall_texture: pygame.Surface | None = None
+        self.wall_background_cache: dict[tuple[int, int], pygame.Surface] = {}
 
     def _load_first_texture(self, folder: Path) -> pygame.Surface | None:
         if not folder.exists() or not folder.is_dir():
@@ -87,18 +88,43 @@ class Renderer:
             for draw_x in range(tile_start_x, tile_end_x, self.TILE_SIZE):
                 screen.blit(tile_surface, (draw_x, draw_y))
 
-    def _draw_tiled_wall_background(self, screen: pygame.Surface, camera) -> None:
+    def _get_wall_background(self, world_width: int, world_height: int) -> pygame.Surface | None:
         if self.wall_texture is None:
+            return None
+
+        cache_key = (world_width, world_height)
+        if cache_key in self.wall_background_cache:
+            return self.wall_background_cache[cache_key]
+
+        background = pygame.transform.scale(self.wall_texture, (world_width, world_height))
+        self.wall_background_cache[cache_key] = background
+        return background
+
+    def _estimate_world_size(self, map_data: dict, screen: pygame.Surface) -> tuple[int, int]:
+        max_x = 0
+        max_y = 0
+
+        for x, y, width, height in map_data.get("platforms", []):
+            max_x = max(max_x, int(x + width))
+            max_y = max(max_y, int(y + height))
+
+        for x, y, width, height in map_data.get("ladders", []):
+            max_x = max(max_x, int(x + width))
+            max_y = max(max_y, int(y + height))
+
+        screen_width, screen_height = screen.get_size()
+        world_width = max(max_x, screen_width)
+        world_height = max(max_y, screen_height)
+        return world_width, world_height
+
+    def _draw_wall_background(self, screen: pygame.Surface, camera, map_data: dict) -> None:
+        world_width, world_height = self._estimate_world_size(map_data, screen)
+        background = self._get_wall_background(world_width, world_height)
+        if background is None:
             return
 
-        tile_surface = pygame.transform.scale(self.wall_texture, (self.TILE_SIZE, self.TILE_SIZE))
-        camera_x = int(getattr(camera, "offset_x", 0.0))
-        offset = -(camera_x % self.TILE_SIZE)
-        screen_width, screen_height = screen.get_size()
-
-        for draw_y in range(0, screen_height, self.TILE_SIZE):
-            for draw_x in range(offset, screen_width + self.TILE_SIZE, self.TILE_SIZE):
-                screen.blit(tile_surface, (draw_x, draw_y))
+        draw_x, draw_y = camera.world_to_screen(0, 0)
+        screen.blit(background, (int(draw_x), int(draw_y)))
 
     def _draw_entity_frame(
         self,
@@ -185,9 +211,8 @@ class Renderer:
         self._load_assets()
         screen.fill(self.BG_COLOR)
 
-        self._draw_tiled_wall_background(screen, camera)
-
         map_data = game_state.get("map", {})
+        self._draw_wall_background(screen, camera, map_data)
         for x, y, w, h in map_data.get("platforms", []):
             if self.floor_texture is not None:
                 self._draw_tiled_world_rect(screen, camera, self.floor_texture, int(x), int(y), int(w), int(h))
