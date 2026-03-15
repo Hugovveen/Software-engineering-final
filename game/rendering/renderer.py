@@ -21,6 +21,8 @@ class Renderer:
     PLAYER_COLOR = (90, 170, 255)
     SELF_COLOR = (90, 255, 160)
     MIMIC_COLOR = (220, 60, 90)
+    ENTITY_RENDER_SCALE = 2.2
+    TILE_SIZE = 64
 
     def __init__(self) -> None:
         self.assets_loaded = False
@@ -28,6 +30,22 @@ class Renderer:
         self.animation_players: dict[tuple[str, str], AnimationPlayer] = {}
         self.scaled_frames_cache: dict[tuple[str, int, int], list[pygame.Surface]] = {}
         self.facing_by_entity: dict[str, int] = {}
+        self.floor_texture: pygame.Surface | None = None
+        self.wall_texture: pygame.Surface | None = None
+
+    def _load_first_texture(self, folder: Path) -> pygame.Surface | None:
+        if not folder.exists() or not folder.is_dir():
+            return None
+        image_paths = sorted(
+            [
+                path
+                for path in folder.iterdir()
+                if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+            ]
+        )
+        if not image_paths:
+            return None
+        return pygame.image.load(str(image_paths[0])).convert_alpha()
 
     def _load_assets(self) -> None:
         if self.assets_loaded:
@@ -39,7 +57,70 @@ class Renderer:
             "secondplayer_walk": load_frames(assets_root / "secondplayer" / "walking"),
             "mimic_walk": load_frames(assets_root / "enemies" / "mimic" / "mimic_player" / "walking"),
         }
+        self.floor_texture = self._load_first_texture(assets_root / "floor")
+        self.wall_texture = self._load_first_texture(assets_root / "wall")
         self.assets_loaded = True
+
+    def _get_scaled_entity_size(self, width: int, height: int) -> tuple[int, int]:
+        scaled_width = max(1, int(width * self.ENTITY_RENDER_SCALE))
+        scaled_height = max(1, int(height * self.ENTITY_RENDER_SCALE))
+        return scaled_width, scaled_height
+
+    def _draw_tiled_world_rect(
+        self,
+        screen: pygame.Surface,
+        camera,
+        texture: pygame.Surface,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+    ) -> None:
+        tile_surface = pygame.transform.scale(texture, (self.TILE_SIZE, self.TILE_SIZE))
+        sx, sy = camera.world_to_screen(x, y)
+        tile_start_x = int(sx)
+        tile_start_y = int(sy)
+        tile_end_x = tile_start_x + int(width)
+        tile_end_y = tile_start_y + int(height)
+
+        for draw_y in range(tile_start_y, tile_end_y, self.TILE_SIZE):
+            for draw_x in range(tile_start_x, tile_end_x, self.TILE_SIZE):
+                screen.blit(tile_surface, (draw_x, draw_y))
+
+    def _draw_tiled_wall_background(self, screen: pygame.Surface, camera) -> None:
+        if self.wall_texture is None:
+            return
+
+        tile_surface = pygame.transform.scale(self.wall_texture, (self.TILE_SIZE, self.TILE_SIZE))
+        camera_x = int(getattr(camera, "offset_x", 0.0))
+        offset = -(camera_x % self.TILE_SIZE)
+        screen_width, screen_height = screen.get_size()
+
+        for draw_y in range(0, screen_height, self.TILE_SIZE):
+            for draw_x in range(offset, screen_width + self.TILE_SIZE, self.TILE_SIZE):
+                screen.blit(tile_surface, (draw_x, draw_y))
+
+    def _draw_entity_frame(
+        self,
+        screen: pygame.Surface,
+        frame: pygame.Surface,
+        world_x: float,
+        world_y: float,
+        width: int,
+        height: int,
+        facing: int,
+        camera,
+    ) -> None:
+        frame_to_draw = frame
+        if facing < 0:
+            frame_to_draw = pygame.transform.flip(frame_to_draw, True, False)
+
+        scaled_width, scaled_height = self._get_scaled_entity_size(width, height)
+        screen_x, screen_y = camera.world_to_screen(world_x, world_y)
+
+        draw_x = int(screen_x - (scaled_width - width) / 2)
+        draw_y = int(screen_y - (scaled_height - height))
+        screen.blit(frame_to_draw, (draw_x, draw_y))
 
     def _get_scaled_frames(self, animation_key: str, width: int, height: int) -> list[pygame.Surface]:
         cache_key = (animation_key, int(width), int(height))
@@ -104,10 +185,15 @@ class Renderer:
         self._load_assets()
         screen.fill(self.BG_COLOR)
 
+        self._draw_tiled_wall_background(screen, camera)
+
         map_data = game_state.get("map", {})
         for x, y, w, h in map_data.get("platforms", []):
-            sx, sy = camera.world_to_screen(x, y)
-            pygame.draw.rect(screen, self.PLATFORM_COLOR, pygame.Rect(sx, sy, w, h))
+            if self.floor_texture is not None:
+                self._draw_tiled_world_rect(screen, camera, self.floor_texture, int(x), int(y), int(w), int(h))
+            else:
+                sx, sy = camera.world_to_screen(x, y)
+                pygame.draw.rect(screen, self.PLATFORM_COLOR, pygame.Rect(sx, sy, w, h))
 
         for x, y, w, h in map_data.get("ladders", []):
             sx, sy = camera.world_to_screen(x, y)
@@ -128,14 +214,21 @@ class Renderer:
                 animation_key=animation_key,
                 dt=dt,
                 is_moving=abs(player_vx) > 0.01,
-                width=player_w,
-                height=player_h,
+                width=self._get_scaled_entity_size(player_w, player_h)[0],
+                height=self._get_scaled_entity_size(player_w, player_h)[1],
             )
 
             if frame is not None:
-                if facing < 0:
-                    frame = pygame.transform.flip(frame, True, False)
-                screen.blit(frame, (sx, sy))
+                self._draw_entity_frame(
+                    screen=screen,
+                    frame=frame,
+                    world_x=float(player.get("x", 0.0)),
+                    world_y=float(player.get("y", 0.0)),
+                    width=player_w,
+                    height=player_h,
+                    facing=facing,
+                    camera=camera,
+                )
             else:
                 pygame.draw.rect(screen, color, pygame.Rect(sx, sy, player_w, player_h))
 
@@ -153,14 +246,21 @@ class Renderer:
                 animation_key="mimic_walk",
                 dt=dt,
                 is_moving=abs(mimic_vx) > 0.01,
-                width=mimic_w,
-                height=mimic_h,
+                width=self._get_scaled_entity_size(mimic_w, mimic_h)[0],
+                height=self._get_scaled_entity_size(mimic_w, mimic_h)[1],
             )
 
             if frame is not None:
-                if facing < 0:
-                    frame = pygame.transform.flip(frame, True, False)
-                screen.blit(frame, (sx, sy))
+                self._draw_entity_frame(
+                    screen=screen,
+                    frame=frame,
+                    world_x=float(mimic.get("x", 0.0)),
+                    world_y=float(mimic.get("y", 0.0)),
+                    width=mimic_w,
+                    height=mimic_h,
+                    facing=facing,
+                    camera=camera,
+                )
             else:
                 pygame.draw.rect(screen, self.MIMIC_COLOR, pygame.Rect(sx, sy, mimic_w, mimic_h))
 
