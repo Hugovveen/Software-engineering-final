@@ -13,7 +13,14 @@ import socket
 import time
 import uuid
 
-from config import SERVER_HOST, SERVER_PORT, TICK_RATE
+from config import (
+    ROUND_DURATION_SECONDS,
+    ROUND_END_PAUSE_SECONDS,
+    ROUND_MIN_PLAYERS,
+    SERVER_HOST,
+    SERVER_PORT,
+    TICK_RATE,
+)
 from entities.enemy_base import EnemyBase
 from entities.enemy_registry import EnemyRegistry
 from entities.mimic import Mimic
@@ -44,6 +51,12 @@ class GameServer:
         self.behavior_tracker = BehaviorTracker()
         self.previous_enemy_states: dict[str, str] = {}
         self.previous_player_charm_levels: dict[str, int] = {}
+        self.round_state: str = "LOBBY"
+        self.round_elapsed: float = 0.0
+        self.round_end_pause_remaining: float = 0.0
+        self.round_end_reason: str | None = None
+        self.round_number: int = 1
+        self.previous_round_state: str = self.round_state
 
     def _spawn_initial_enemies(self) -> None:
         try:
@@ -141,8 +154,46 @@ class GameServer:
             )
             self.behavior_tracker.record(player_id, player.x, player.y)
 
-        for enemy_id in sorted(self.enemies.keys()):
-            self.enemies[enemy_id].update(dt=dt, world=self.world, players=self.players)
+        self._update_round_state(dt)
+
+        if self.round_state == "RUNNING":
+            for enemy_id in sorted(self.enemies.keys()):
+                self.enemies[enemy_id].update(dt=dt, world=self.world, players=self.players)
+
+    def _update_round_state(self, dt: float) -> None:
+        player_count = len(self.players)
+
+        if self.round_state == "LOBBY":
+            self.round_elapsed = 0.0
+            self.round_end_reason = None
+            self.round_end_pause_remaining = 0.0
+            if player_count >= ROUND_MIN_PLAYERS:
+                self.round_state = "RUNNING"
+                self.round_elapsed = 0.0
+            return
+
+        if self.round_state == "RUNNING":
+            if player_count < ROUND_MIN_PLAYERS:
+                self.round_state = "LOBBY"
+                self.round_elapsed = 0.0
+                self.round_end_reason = "NOT_ENOUGH_PLAYERS"
+                return
+
+            self.round_elapsed += dt
+            if self.round_elapsed >= ROUND_DURATION_SECONDS:
+                self.round_state = "GAME_OVER"
+                self.round_end_reason = "TIME_UP"
+                self.round_end_pause_remaining = ROUND_END_PAUSE_SECONDS
+            return
+
+        if self.round_state == "GAME_OVER":
+            self.round_end_pause_remaining = max(0.0, self.round_end_pause_remaining - dt)
+            if self.round_end_pause_remaining <= 0.0:
+                self.round_state = "LOBBY"
+                self.round_elapsed = 0.0
+                self.round_end_reason = None
+                self.round_end_pause_remaining = 0.0
+                self.round_number += 1
 
     def _cleanup_connection(self, conn: socket.socket) -> None:
         player_id = self.connections.pop(conn, None)
@@ -167,6 +218,11 @@ class GameServer:
         mimic_payload = self.mimic.to_dict() if self.mimic_id in self.enemies else {}
         players_payload = [p.to_dict() for p in self.players.values()]
         events = self._build_gameplay_events(players_payload, enemies_payload)
+        round_time_remaining = 0.0
+        if self.round_state == "RUNNING":
+            round_time_remaining = max(0.0, ROUND_DURATION_SECONDS - self.round_elapsed)
+        elif self.round_state == "GAME_OVER":
+            round_time_remaining = self.round_end_pause_remaining
 
         state_message = {
             "type": "GAME_STATE",
@@ -174,6 +230,14 @@ class GameServer:
             "mimic": mimic_payload,
             "enemies": enemies_payload,
             "events": events,
+            "round": {
+                "state": self.round_state,
+                "number": self.round_number,
+                "elapsed": self.round_elapsed,
+                "time_remaining": round_time_remaining,
+                "end_reason": self.round_end_reason,
+                "min_players": ROUND_MIN_PLAYERS,
+            },
             "map": {
                 "platforms": self.world.platforms,
                 "ladders": self.world.ladders,
@@ -192,6 +256,17 @@ class GameServer:
 
     def _build_gameplay_events(self, players_payload: list[dict], enemies_payload: list[dict]) -> list[dict]:
         events: list[dict] = []
+
+        if self.round_state != self.previous_round_state:
+            events.append(
+                {
+                    "type": "ROUND_STATE_CHANGED",
+                    "state": self.round_state,
+                    "reason": self.round_end_reason,
+                    "round_number": self.round_number,
+                }
+            )
+            self.previous_round_state = self.round_state
 
         current_enemy_states: dict[str, str] = {}
         for enemy in enemies_payload:

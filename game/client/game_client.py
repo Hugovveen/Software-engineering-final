@@ -34,6 +34,7 @@ class GameClient:
         self.self_id: str | None = None
         self.game_state: dict = {"players": [], "mimic": {}, "map": {}}
         self.recent_events: list[dict] = []
+        self.round_info: dict = {"state": "LOBBY", "number": 1, "time_remaining": 0.0}
 
     def _push_event(self, text: str, ttl: float = 3.0) -> None:
         self.recent_events.append(
@@ -53,6 +54,12 @@ class GameClient:
                     f"Player {event.get('player_id', '?')} charmed (L{event.get('charm_level', 0)})",
                     ttl=3.0,
                 )
+            elif event_type == "ROUND_STATE_CHANGED":
+                state = str(event.get("state", "LOBBY"))
+                round_number = int(event.get("round_number", 1))
+                reason = event.get("reason")
+                reason_suffix = f" ({reason})" if reason else ""
+                self._push_event(f"Round {round_number}: {state}{reason_suffix}", ttl=3.5)
             elif event_type == "SIREN_PULSE":
                 target_count = len(event.get("target_ids", []))
                 self._push_event(f"Siren pulse hit {target_count} target(s)", ttl=3.0)
@@ -103,6 +110,7 @@ class GameClient:
                 self._push_event(f"{msg.get('name', 'Player')} left", ttl=2.0)
             elif msg_type == "GAME_STATE":
                 self.game_state = msg
+                self.round_info = dict(msg.get("round", self.round_info))
                 self._ingest_gameplay_events(list(msg.get("events", [])))
 
     def _update_camera(self) -> None:

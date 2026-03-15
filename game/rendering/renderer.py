@@ -122,6 +122,53 @@ class Renderer:
             screen.blit(text, (panel_x + padding, y))
             y += line_height
 
+    def _draw_round_hud(self, screen: pygame.Surface, game_state: dict, font: pygame.font.Font | None) -> None:
+        if font is None:
+            return
+
+        round_info = dict(game_state.get("round", {}))
+        state = str(round_info.get("state", "LOBBY"))
+        number = int(round_info.get("number", 1))
+        time_remaining = float(round_info.get("time_remaining", 0.0))
+        min_players = int(round_info.get("min_players", 1))
+        current_players = len(game_state.get("players", []))
+
+        lines = [
+            f"Round {number} | {state}",
+            f"Time: {time_remaining:05.1f}s",
+            f"Players: {current_players}/{min_players}+",
+        ]
+
+        panel_width = 340
+        line_height = 22
+        padding = 10
+        panel_height = padding * 2 + line_height * len(lines)
+        panel = pygame.Surface((panel_width, panel_height), pygame.SRCALPHA)
+        panel.fill((12, 12, 20, 175))
+        screen.blit(panel, (16, 16))
+
+        y = 16 + padding
+        for line in lines:
+            text = font.render(line, True, (236, 236, 240))
+            screen.blit(text, (26, y))
+            y += line_height
+
+        if state in {"LOBBY", "GAME_OVER"}:
+            banner_text = "Waiting for players..." if state == "LOBBY" else "Round Over"
+            if state == "GAME_OVER":
+                reason = round_info.get("end_reason")
+                if reason:
+                    banner_text = f"Round Over: {reason}"
+
+            banner = font.render(banner_text, True, (255, 230, 180))
+            screen_width, _ = screen.get_size()
+            banner_rect = banner.get_rect(center=(screen_width // 2, 42))
+            bg = pygame.Surface((banner_rect.width + 20, banner_rect.height + 10), pygame.SRCALPHA)
+            bg.fill((30, 20, 20, 170))
+            bg_rect = bg.get_rect(center=banner_rect.center)
+            screen.blit(bg, bg_rect.topleft)
+            screen.blit(banner, banner_rect.topleft)
+
     def _load_first_texture(self, folder: Path) -> pygame.Surface | None:
         if not folder.exists() or not folder.is_dir():
             return None
@@ -431,6 +478,7 @@ class Renderer:
                 )
 
         ui_font = self._ensure_ui_font()
+        self._draw_round_hud(screen, game_state, ui_font)
         for player in game_state.get("players", []):
             self._draw_player_status(screen, camera, player, player.get("id") == self_id, ui_font)
         for enemy in enemies:

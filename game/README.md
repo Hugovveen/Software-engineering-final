@@ -69,3 +69,29 @@ Good next steps:
 - add mimic behavior based on `BehaviorTracker`
 - implement proximity and ambient sounds in `SoundSystem`
 - add collision handling with all platforms
+
+## Week 1 Planning TODO
+
+### Objective System (Core Goal)
+
+- [ ] Define round objective as **collect loot and survive extraction**.
+- [ ] Add a server-side `loot_items` state list (id, position, collected_by, collected_at).
+- [ ] Add player loot inventory count to player state payload.
+- [ ] Add collectible interaction rule (pickup range + one-time collection).
+- [ ] Add round completion condition: collect required loot amount before timer ends.
+- [ ] Add loss condition: round timer ends before required loot is collected.
+
+### Level Design TODO
+
+- [ ] Define first playable facility layout pass (rooms, corridors, vertical connectors).
+- [ ] Place loot spawn zones with risk/reward balance (safe, medium, high danger areas).
+- [ ] Add enemy pressure zones for `mimic`, `weeping_angel`, and `siren` patrol influence.
+- [ ] Mark intended player routes: fast route vs safe route.
+- [ ] Add extraction zone location and clear pathing constraints.
+- [ ] Validate traversal: every loot zone must be reachable using current movement systems.
+
+### UX Scaffolding TODO
+
+- [ ] Add HUD element showing `loot_collected / loot_required`.
+- [ ] Add objective banner text for current round state (`LOBBY`, `RUNNING`, `GAME_OVER`).
+- [ ] Add event feed messages for loot pickup, objective progress, and extraction readiness.
