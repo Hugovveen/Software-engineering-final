@@ -97,7 +97,7 @@ class GameClient:
             self.network.send(self._build_input_message())
             self._handle_network_messages()
             self._update_camera()
-            self.renderer.draw(screen, self.camera, self.game_state, self.self_id)
+            self.renderer.draw(screen, self.camera, self.game_state, self.self_id, dt)
 
             if dt > 0:
                 pass  # Placeholder for future local interpolation systems.
