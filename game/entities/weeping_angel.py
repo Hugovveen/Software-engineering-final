@@ -1,180 +1,103 @@
-"""Weeping Angel monster entity for GROVE.
-
-Frozen while any player has line of sight. Teleports closer the instant
-ALL players look away. Players must coordinate to keep it frozen.
-
-Side-view adaptation: line-of-sight is horizontal distance + same floor check.
-The Angel walks on platforms. It can only teleport when unobserved.
-"""
+"""Weeping Angel enemy behavior for the authoritative server."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
-try:
-    from config import ANGEL_TELEPORT_PX, ANGEL_COOLDOWN_FRAMES, PLAYER_SIZE
-except ImportError:
-    ANGEL_TELEPORT_PX     = 55
-    ANGEL_COOLDOWN_FRAMES = 50
-    PLAYER_SIZE           = (30, 48)
-
-# Horizontal range in which a player "sees" the angel (flashlight cone width).
-PLAYER_VIEW_RANGE_X = 220
+from config import (
+    WEEPING_ANGEL_ATTACK_RANGE,
+    WEEPING_ANGEL_CHASE_SPEED,
+    WEEPING_ANGEL_OBSERVE_RANGE,
+    WEEPING_ANGEL_SIZE,
+)
+from entities.enemy_base import EnemyBase
 
 
 @dataclass
-class WeepingAngel:
-    """Teleports toward players when unobserved. Frozen when watched.
+class WeepingAngel(EnemyBase):
+    """Chases the closest player when not being observed."""
 
-    Attributes:
-        x, y:          World position.
-        frozen:        True when at least one player has line of sight.
-        cooldown:      Frames remaining before next teleport is allowed.
-        teleport_count: Total teleports made this run (for debugging/display).
-        kill_range:    Pixel distance for instant kill.
-    """
-
-    x: float = 1100.0
+    enemy_id: str = "weeping-angel-1"
+    enemy_type: str = "weeping_angel"
+    x: float = 860.0
     y: float = 360.0
-    width: int = field(default=PLAYER_SIZE[0])
-    height: int = field(default=PLAYER_SIZE[1])
-    frozen: bool = False
-    cooldown: int = 0
-    teleport_count: int = 0
-    kill_range: float = 26.0
+    vx: float = 0.0
+    vy: float = 0.0
+    width: int = field(default=WEEPING_ANGEL_SIZE[0])
+    height: int = field(default=WEEPING_ANGEL_SIZE[1])
+    state: str = "idle"
+    target_id: str | None = None
 
-    # ------------------------------------------------------------------
-    # Observation check
-    # ------------------------------------------------------------------
+    def _distance_to_player(self, player: Any) -> float:
+        dx = float(player.x) - self.x
+        dy = float(player.y) - self.y
+        return math.hypot(dx, dy)
 
-    def _player_observing(self, player, facing_right: bool) -> bool:
-        """Return True if this player is looking toward the angel.
+    def _get_nearest_player(self, players: dict[str, Any]) -> tuple[str | None, Any, float]:
+        nearest_id: str | None = None
+        nearest_player: Any = None
+        nearest_dist = float("inf")
 
-        In side-view, "looking toward" means the angel is in the direction
-        the player is facing and within horizontal view range.
+        for player_id in sorted(players.keys()):
+            player = players[player_id]
+            dist = self._distance_to_player(player)
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_id = player_id
+                nearest_player = player
 
-        Args:
-            player:       Player object with x, y attributes.
-            facing_right: True if the player is moving/looking right.
+        return nearest_id, nearest_player, nearest_dist
 
-        Returns:
-            True if the player has line of sight on the angel.
-        """
-        dx = self.x - player.x
-        dy = abs(self.y - player.y)
+    def _is_observed(self, players: dict[str, Any]) -> bool:
+        for player in players.values():
+            distance = self._distance_to_player(player)
+            if distance > WEEPING_ANGEL_OBSERVE_RANGE:
+                continue
 
-        # Must be on roughly the same vertical level (within 120px)
-        if dy > 120:
-            return False
+            horizontal_delta = self.x - float(player.x)
+            player_facing = float(getattr(player, "facing", 1))
 
-        dist = abs(dx)
-        if dist > PLAYER_VIEW_RANGE_X:
-            return False
-
-        # Facing check: player must be looking in the angel's direction
-        if facing_right and dx < 0:
-            return False
-        if not facing_right and dx > 0:
-            return False
-
-        return True
-
-    def is_observed(self, players: dict, facing_map: dict) -> bool:
-        """Check whether any living player currently watches the angel.
-
-        Args:
-            players:    {player_id: Player} dict.
-            facing_map: {player_id: bool} — True means facing right.
-
-        Returns:
-            True if at least one player has line of sight.
-        """
-        for pid, player in players.items():
-            facing_right = facing_map.get(pid, True)
-            if self._player_observing(player, facing_right):
+            if horizontal_delta == 0.0:
+                return True
+            if horizontal_delta * player_facing > 0.0:
                 return True
         return False
 
-    # ------------------------------------------------------------------
-    # Update
-    # ------------------------------------------------------------------
-
-    def update(
-        self,
-        players: dict,
-        facing_map: dict,
-        floor_y: float,
-    ) -> list[str]:
-        """Advance angel state one server tick.
-
-        Args:
-            players:    {player_id: Player}.
-            facing_map: {player_id: bool} — True = facing right.
-            floor_y:    Ground y for floor clamping.
-
-        Returns:
-            List of player_ids killed this tick.
-        """
-        killed: list[str] = []
-
-        self.frozen = self.is_observed(players, facing_map)
-
-        if self.frozen:
-            self.cooldown = ANGEL_COOLDOWN_FRAMES
-            return killed
-
-        # Not observed — attempt teleport
-        self.cooldown -= 1
-        if self.cooldown <= 0 and players:
-            nearest_id, nearest_dist = self._nearest_player(players)
-            if nearest_dist > self.kill_range:
-                self._teleport_toward(players[nearest_id])
-            else:
-                killed.append(nearest_id)
-
-        # Floor clamp
+    def update(self, dt: float, world: Any, players: dict[str, Any]) -> None:
+        floor_y = float(world.floor_y()) if hasattr(world, "floor_y") else self.y
         self.y = floor_y
 
-        return killed
+        if not players:
+            self.state = "idle"
+            self.vx = 0.0
+            self.target_id = None
+            return
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+        nearest_id, nearest_player, nearest_dist = self._get_nearest_player(players)
+        self.target_id = nearest_id
 
-    def _nearest_player(self, players: dict) -> tuple[str, float]:
-        """Return (player_id, distance) of nearest player."""
-        best_id, best_dist = "", float("inf")
-        for pid, p in players.items():
-            d = math.hypot(p.x - self.x, p.y - self.y)
-            if d < best_dist:
-                best_dist = d
-                best_id = pid
-        return best_id, best_dist
+        if self._is_observed(players):
+            self.state = "frozen"
+            self.vx = 0.0
+            return
 
-    def _teleport_toward(self, player) -> None:
-        """Move ANGEL_TELEPORT_PX pixels toward the target player."""
-        dx = player.x - self.x
-        if abs(dx) <= ANGEL_TELEPORT_PX:
-            self.x = player.x
-        else:
-            self.x += math.copysign(ANGEL_TELEPORT_PX, dx)
+        if nearest_player is None:
+            self.state = "idle"
+            self.vx = 0.0
+            return
 
-        self.teleport_count += 1
-        self.cooldown = ANGEL_COOLDOWN_FRAMES
+        if nearest_dist <= WEEPING_ANGEL_ATTACK_RANGE:
+            self.state = "attacking"
+            self.vx = 0.0
+            return
 
-    # ------------------------------------------------------------------
-    # Serialisation
-    # ------------------------------------------------------------------
+        direction = 1.0 if float(nearest_player.x) > self.x else -1.0
+        self.vx = direction * WEEPING_ANGEL_CHASE_SPEED
+        self.x += self.vx * dt
+        self.state = "chasing"
 
-    def to_dict(self) -> dict:
-        """Convert to JSON-safe dict for network broadcast."""
-        return {
-            "type": "angel",
-            "x": self.x,
-            "y": self.y,
-            "w": self.width,
-            "h": self.height,
-            "frozen": self.frozen,
-            "teleport_count": self.teleport_count,
-        }
+        world_min_x = 0.0
+        world_max_x = max(world_min_x, float(getattr(world, "world_width", 1600)) - float(self.width))
+        self.x = max(world_min_x, min(world_max_x, self.x))

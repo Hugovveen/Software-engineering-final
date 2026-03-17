@@ -1,201 +1,204 @@
-"""Siren monster entity for GROVE.
-
-Lures players with fake item pickup sounds. The closer you get the faster
-your sanity drains. At night it sings — all players on the map are affected.
-Teammate can break your trance by standing next to you (within 40px).
-
-Side-view: Siren walks on platforms like players do.
-"""
+"""Siren enemy behavior for patrol, chase, and pulse casting."""
 
 from __future__ import annotations
 
 import math
-import random
 from dataclasses import dataclass, field
+from typing import Any
 
-# Pulled from config — paste config_additions.py into Hugo's config.py first.
-try:
-    from config import (
-        SIREN_DETECT_RANGE, SIREN_SANITY_DRAIN,
-        SIREN_SPEED, SIREN_KILL_RANGE, PLAYER_SIZE,
-    )
-except ImportError:
-    SIREN_DETECT_RANGE = 280
-    SIREN_SANITY_DRAIN = 0.18
-    SIREN_SPEED        = 55.0
-    SIREN_KILL_RANGE   = 30
-    PLAYER_SIZE        = (30, 48)
+from config import (
+    SIREN_AGGRO_RANGE,
+    SIREN_CAST_TIME,
+    SIREN_CHARM_DURATION,
+    SIREN_CHARM_PULL_SPEED_L1,
+    SIREN_CHARM_PULL_SPEED_L2,
+    SIREN_CHARM_PULL_SPEED_L3,
+    SIREN_CHASE_SPEED,
+    SIREN_INITIAL_CAST_DELAY,
+    SIREN_PATROL_SPEED,
+    SIREN_PULSE_COOLDOWN,
+    SIREN_PULSE_RADIUS,
+    SIREN_SIZE,
+)
+from entities.enemy_base import EnemyBase
 
 
 @dataclass
-class Siren:
-    """Lures players with deceptive audio cues and drains sanity on approach.
+class Siren(EnemyBase):
+    """Patrols until a player enters aggro range, then chases and pulses."""
 
-    Attributes:
-        x, y:          World position (pixels).
-        vx:            Horizontal velocity.
-        luring:        True when actively pulling a target.
-        trance_target: player_id of the player currently being lured.
-        night_mode:    True during night phase — song affects entire map.
-        lure_timer:    Counts frames; used to emit lure sound periodically.
-    """
-
-    x: float = 900.0
+    enemy_id: str = "siren-1"
+    enemy_type: str = "siren"
+    x: float = 1200.0
     y: float = 360.0
-    vx: float = 0.0
-    width: int = field(default=PLAYER_SIZE[0])
-    height: int = field(default=PLAYER_SIZE[1])
-    luring: bool = False
-    trance_target: str | None = None   # player_id
-    night_mode: bool = False
-    lure_timer: int = 0
-    _wander_dir: float = field(default=1.0, repr=False)
-    _wander_timer: int = field(default=0, repr=False)
+    vx: float = -90.0
+    vy: float = 0.0
+    width: int = field(default=SIREN_SIZE[0])
+    height: int = field(default=SIREN_SIZE[1])
+    state: str = "patrol"
+    target_id: str | None = None
+    pulse_cooldown_remaining: float = field(default=SIREN_INITIAL_CAST_DELAY)
+    cast_time_remaining: float = 0.0
+    charmed_targets: dict[str, dict[str, float | int]] = field(default_factory=dict)
 
-    # ------------------------------------------------------------------
-    # Update
-    # ------------------------------------------------------------------
+    def _distance_to_player(self, player: Any) -> float:
+        dx = float(player.x) - self.x
+        dy = float(player.y) - self.y
+        return math.hypot(dx, dy)
 
-    def update(
-        self,
-        dt: float,
-        players: dict,          # {player_id: Player}
-        sanity_map: dict,       # {player_id: float} — managed by SanitySystem
-        floor_y: float,
-        world_min_x: float,
-        world_max_x: float,
-        is_night: bool = False,
-    ) -> list[str]:
-        """Advance Siren state one server tick.
+    def _get_nearest_player(self, players: dict[str, Any]) -> tuple[str | None, Any, float]:
+        nearest_id: str | None = None
+        nearest_player: Any = None
+        nearest_dist = float("inf")
 
-        Args:
-            dt:          Delta time in seconds.
-            players:     All connected Player objects keyed by id.
-            sanity_map:  Mutable sanity dict — Siren writes drain values.
-            floor_y:     Ground y coordinate for platform clamping.
-            world_min_x: Left bound.
-            world_max_x: Right bound.
-            is_night:    Whether night phase is active.
+        for player_id in sorted(players.keys()):
+            player = players[player_id]
+            dist = self._distance_to_player(player)
+            if dist < nearest_dist:
+                nearest_dist = dist
+                nearest_id = player_id
+                nearest_player = player
 
-        Returns:
-            List of player_ids killed this tick (instant kill at melee range).
-        """
-        self.night_mode = is_night
-        self.lure_timer += 1
-        killed: list[str] = []
+        return nearest_id, nearest_player, nearest_dist
 
-        alive = {pid: p for pid, p in players.items()}
+    def _update_patrol(self, dt: float, world: Any) -> None:
+        world_min_x = 0.0
+        world_max_x = max(world_min_x, float(getattr(world, "world_width", 1600)) - float(self.width))
 
-        # Night song — drain all players slightly
-        if self.night_mode:
-            for pid in alive:
-                sanity_map[pid] = max(0.0, sanity_map.get(pid, 100.0) - SIREN_SANITY_DRAIN * 0.25)
+        if self.vx == 0.0:
+            self.vx = SIREN_PATROL_SPEED
 
-        if not alive:
-            self._wander(dt, floor_y, world_min_x, world_max_x)
-            return killed
+        self.x += self.vx * dt
+        if self.x <= world_min_x:
+            self.x = world_min_x
+            self.vx = abs(SIREN_PATROL_SPEED)
+        elif self.x >= world_max_x:
+            self.x = world_max_x
+            self.vx = -abs(SIREN_PATROL_SPEED)
 
-        nearest_id, nearest_dist = self._nearest_player(alive)
+    def _get_charm_level(self, distance: float) -> int:
+        if distance <= SIREN_PULSE_RADIUS * 0.33:
+            return 3
+        if distance <= SIREN_PULSE_RADIUS * 0.66:
+            return 2
+        return 1
 
-        if nearest_dist <= SIREN_KILL_RANGE:
-            killed.append(nearest_id)
-            self.luring = False
-            self.trance_target = None
-            return killed
+    def _get_pull_speed(self, charm_level: int, distance: float) -> float:
+        base_speeds = {
+            1: SIREN_CHARM_PULL_SPEED_L1,
+            2: SIREN_CHARM_PULL_SPEED_L2,
+            3: SIREN_CHARM_PULL_SPEED_L3,
+        }
+        base_speed = base_speeds.get(charm_level, SIREN_CHARM_PULL_SPEED_L1)
+        closeness = 1.0 - min(distance, SIREN_PULSE_RADIUS) / SIREN_PULSE_RADIUS
+        return base_speed * (0.65 + (1.1 * closeness))
 
-        if nearest_dist <= SIREN_DETECT_RANGE:
-            # Lure and drift toward
-            self.luring = True
-            self.trance_target = nearest_id
-            target = alive[nearest_id]
-            self._move_toward(target.x, dt)
-            # Sanity drain scales with proximity
-            scale = 1.0 - (nearest_dist / SIREN_DETECT_RANGE)
-            sanity_map[nearest_id] = max(
-                0.0,
-                sanity_map.get(nearest_id, 100.0) - SIREN_SANITY_DRAIN * scale
-            )
-        else:
-            self.luring = False
-            self.trance_target = None
-            self._wander(dt, floor_y, world_min_x, world_max_x)
+    def _apply_charm_pulse(self, players: dict[str, Any]) -> None:
+        for player_id, player in players.items():
+            distance = self._distance_to_player(player)
+            if distance > SIREN_PULSE_RADIUS:
+                continue
 
-        # Floor clamp
+            charm_level = self._get_charm_level(distance)
+            self.charmed_targets[player_id] = {
+                "remaining": SIREN_CHARM_DURATION,
+                "level": charm_level,
+            }
+            player.charmed_by = self.enemy_id
+            player.charm_timer = SIREN_CHARM_DURATION
+            player.charm_level = charm_level
+
+    def _apply_charm_effects(self, dt: float, world: Any, players: dict[str, Any]) -> None:
+        world_min_x = 0.0
+
+        expired_targets: list[str] = []
+        for player_id, effect in self.charmed_targets.items():
+            player = players.get(player_id)
+            if player is None:
+                expired_targets.append(player_id)
+                continue
+
+            remaining = max(0.0, float(effect["remaining"]) - dt)
+            charm_level = int(effect["level"])
+            effect["remaining"] = remaining
+
+            if remaining <= 0.0:
+                player.charmed_by = None
+                player.charm_timer = 0.0
+                player.charm_level = 0
+                expired_targets.append(player_id)
+                continue
+
+            horizontal_delta = self.x - float(player.x)
+            distance = abs(horizontal_delta)
+            direction = 0.0 if distance < 1.0 else (1.0 if horizontal_delta > 0.0 else -1.0)
+            pull_speed = self._get_pull_speed(charm_level, distance)
+            world_max_x = max(world_min_x, float(getattr(world, "world_width", 1600)) - float(player.width))
+
+            player.x += direction * pull_speed * dt
+            player.x = max(world_min_x, min(world_max_x, player.x))
+            player.charmed_by = self.enemy_id
+            player.charm_timer = remaining
+            player.charm_level = charm_level
+
+        for player_id in expired_targets:
+            self.charmed_targets.pop(player_id, None)
+
+    def update(self, dt: float, world: Any, players: dict[str, Any]) -> None:
+        floor_y = float(world.floor_y()) if hasattr(world, "floor_y") else self.y
         self.y = floor_y
 
-        return killed
+        self.pulse_cooldown_remaining = max(0.0, self.pulse_cooldown_remaining - dt)
+        self._apply_charm_effects(dt, world, players)
 
-    # ------------------------------------------------------------------
-    # Trance breaking
-    # ------------------------------------------------------------------
+        if self.cast_time_remaining > 0.0:
+            self.cast_time_remaining = max(0.0, self.cast_time_remaining - dt)
+            self.state = "casting"
+            self.vx = 0.0
+            if self.cast_time_remaining <= 0.0:
+                self._apply_charm_pulse(players)
+                self.state = "cooldown"
+                self.pulse_cooldown_remaining = SIREN_PULSE_COOLDOWN
+            return
 
-    def try_break_trance(self, players: dict) -> bool:
-        """Break the trance if a teammate is close to the victim.
+        if not players:
+            self.target_id = None
+            self.state = "patrol"
+            self._update_patrol(dt, world)
+            return
 
-        Args:
-            players: All connected Player objects.
+        nearest_id, nearest_player, nearest_dist = self._get_nearest_player(players)
 
-        Returns:
-            True if trance was broken.
-        """
-        if not self.trance_target or self.trance_target not in players:
-            return False
-        victim = players[self.trance_target]
-        for pid, p in players.items():
-            if pid == self.trance_target:
-                continue
-            dist = math.hypot(p.x - victim.x, p.y - victim.y)
-            if dist < 40:
-                self.luring = False
-                self.trance_target = None
-                return True
-        return False
+        if nearest_player is None:
+            self.target_id = None
+            self.state = "patrol"
+            self._update_patrol(dt, world)
+            return
 
-    def should_emit_lure_sound(self) -> bool:
-        """True every ~3 seconds when luring — client plays fake sample sound."""
-        return self.luring and self.lure_timer % 180 == 0
+        self.target_id = nearest_id
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+        if nearest_dist <= SIREN_PULSE_RADIUS and self.pulse_cooldown_remaining <= 0.0:
+            self.cast_time_remaining = SIREN_CAST_TIME
+            self.state = "casting"
+            self.vx = 0.0
+            return
 
-    def _nearest_player(self, players: dict) -> tuple[str, float]:
-        """Return (player_id, distance) for the closest player."""
-        best_id = ""
-        best_dist = float("inf")
-        for pid, p in players.items():
-            d = math.hypot(p.x - self.x, p.y - self.y)
-            if d < best_dist:
-                best_dist = d
-                best_id = pid
-        return best_id, best_dist
+        if nearest_dist <= SIREN_AGGRO_RANGE:
+            direction = 1.0 if float(nearest_player.x) > self.x else -1.0
+            self.vx = direction * SIREN_CHASE_SPEED
+            self.x += self.vx * dt
+            self.state = "chasing"
+        else:
+            self.state = "patrol"
+            self._update_patrol(dt, world)
 
-    def _move_toward(self, target_x: float, dt: float) -> None:
-        """Slowly drift toward target x position."""
-        dx = target_x - self.x
-        if abs(dx) > 4:
-            self.x += math.copysign(SIREN_SPEED * dt, dx)
-
-    def _wander(self, dt: float, floor_y: float, mn: float, mx: float) -> None:
-        """Random horizontal wander on the floor."""
-        self._wander_timer += 1
-        if self._wander_timer > 90 or random.random() < 0.01:
-            self._wander_dir *= -1
-            self._wander_timer = 0
-        self.x = max(mn, min(mx, self.x + self._wander_dir * SIREN_SPEED * 0.4 * dt))
-
-    # ------------------------------------------------------------------
-    # Serialisation
-    # ------------------------------------------------------------------
+        world_min_x = 0.0
+        world_max_x = max(world_min_x, float(getattr(world, "world_width", 1600)) - float(self.width))
+        self.x = max(world_min_x, min(world_max_x, self.x))
 
     def to_dict(self) -> dict:
-        """Convert to JSON-safe dict for network broadcast."""
-        return {
-            "type": "siren",
-            "x": self.x,
-            "y": self.y,
-            "w": self.width,
-            "h": self.height,
-            "luring": self.luring,
-            "trance_target": self.trance_target,
-        }
+        payload = super().to_dict()
+        payload["pulse_cooldown_remaining"] = self.pulse_cooldown_remaining
+        payload["cast_time_remaining"] = self.cast_time_remaining
+        payload["charmed_target_ids"] = sorted(self.charmed_targets.keys())
+        return payload
