@@ -20,6 +20,7 @@ import pygame
 from config import LOOT_PICKUP_RADIUS
 
 # NEW — lighting system
+from game.systems import quota
 from rendering.lighting import LightingSystem
 from rendering.sprite_loader import AnimationPlayer, load_frames
 
@@ -754,3 +755,45 @@ class Renderer:
             "shake_x": random.randint(-intensity, intensity),
             "shake_y": random.randint(-intensity, intensity),
         }
+    def draw_lobby(self, screen: pygame.Surface) -> None:
+        """Draw the lobby/title screen while waiting for game to start."""
+        sw, sh = screen.get_size()
+        screen.fill((8, 12, 7))
+        font_big = pygame.font.SysFont("monospace", 72, bold=True)
+        font_small = pygame.font.SysFont("monospace", 14)
+
+        title = font_big.render("GROVE", True, (200, 212, 168))
+        screen.blit(title, (sw // 2 - title.get_width() // 2,
+                                sh // 2 - title.get_height() // 2 - 40))
+
+        sub = font_small.render("waiting for players...", True, (50, 80, 40))
+        screen.blit(sub, (sw // 2 - sub.get_width() // 2,
+                            sh // 2 + 60))
+
+    def draw_game_over(self, screen: pygame.Surface, game_state: dict) -> None:
+        """Draw the end screen when all players are dead."""
+        sw, sh = screen.get_size()
+        screen.fill((8, 6, 6))
+        font_big = pygame.font.SysFont("monospace", 64, bold=True)
+        font_med = pygame.font.SysFont("monospace", 14)
+
+        title = font_big.render("ALL LOST", True, (200, 168, 120))
+        screen.blit(title, (sw // 2 - title.get_width() // 2,
+                                sh // 2 - title.get_height() // 2 - 60))
+
+        sub = font_med.render("the forest remembers", True, (60, 40, 30))
+        screen.blit(sub, (sw // 2 - sub.get_width() // 2,
+                            sh // 2 + 20))
+
+        quota = game_state.get("quota", {})
+        collected = quota.get("collected", 0)
+        target = quota.get("quota", 200)
+        info = font_med.render(f"quota fulfilled: {collected}/{target}", True, (80, 60, 40))
+        screen.blit(info, (sw // 2 - info.get_width() // 2,
+                            sh // 2 + 50))
+
+        players = game_state.get("players", [])
+        for i, p in enumerate(players):
+            line = font_med.render(f"{p.get('name', 'player')} — consumed", True, (100, 50, 50))
+            screen.blit(line, (sw // 2 - line.get_width() // 2,
+                                sh // 2 + 85 + i * 22))

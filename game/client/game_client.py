@@ -157,6 +157,7 @@ class GameClient:
 
         self.network.connect()
         self._send_join()
+        running = True
 
         input_send_interval = 1.0 / 30.0
         time_since_input_send = input_send_interval
@@ -172,10 +173,16 @@ class GameClient:
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
                     self.network.send({"type": "PLAYER_INTERACT"})
 
+        self._handle_network_messages()
+        state = self.round_info.get("state", "LOBBY")
+
+        if state == "LOBBY":
+            self.renderer.draw_lobby(screen)
+
+        elif state == "PLAYING":
             if time_since_input_send >= input_send_interval:
                 self.network.send(self._build_input_message())
                 time_since_input_send -= input_send_interval
-            self._handle_network_messages()
             self._prune_events()
             self._update_camera()
             self.renderer.draw(
@@ -187,8 +194,10 @@ class GameClient:
                 sanity_map=self.sanity_map,
             )
 
-            if dt > 0:
-                pass  # Placeholder for future local interpolation systems.
+        elif state == "GAME_OVER":
+            self.renderer.draw_game_over(screen, self.game_state)
+
+        pygame.display.flip()
 
         self.network.close()
         pygame.quit()

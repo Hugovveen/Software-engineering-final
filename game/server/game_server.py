@@ -82,6 +82,7 @@ class GameServer:
         self._pending_throws: list[tuple[float, float]] = []
         self._throw_window = 0   # frame counter for simultaneous throw window
         self._events: list[dict] = []
+        self.round_state: str = "LOBBY"
 
         self._loot_items: list[Loot] = []
         self._next_loot_id = 1
@@ -219,6 +220,7 @@ class GameServer:
 
         # NEW — register with sanity system
         self.sanity.register(player_id)
+        self.round_state = "PLAYING"
 
         ServerNetwork.send(
             conn,
@@ -329,6 +331,7 @@ class GameServer:
                 "platforms": self.world.platforms,
                 "ladders":   self.world.ladders,
                 "extraction_zone": getattr(self.world, "extraction_zone", (0, 0, 0, 0)),
+            "round": {"state": self.round_state, "number": 1, "time_remaining": 0.0},
             },
             # NEW fields
             "monsters":   all_monsters,
@@ -426,6 +429,11 @@ class GameServer:
                 # NEW — tick sanity and quota
                 self.sanity.update(self.players, all_monsters)
                 self.quota.tick()
+                if self.round_state == "PLAYING" and self.players:
+                    if self.quota.to_dict().get("game_over", False):
+                        self.round_state = "GAME_OVER"
+                    elif all(not p.alive for p in self.players.values()):
+                        self.round_state = "GAME_OVER"
 
                 self._broadcast_game_state()
                 last_tick = now

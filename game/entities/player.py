@@ -29,6 +29,8 @@ class Player:
     charm_level: int = 0
     sprinting: bool = False
     sprint_energy: float = SPRINT_MAX_ENERGY
+    health: int = 100
+    alive: bool = True
     carried_loot_count: int = 0
     carried_loot_value: int = 0
 
@@ -52,4 +54,6 @@ class Player:
             "sprint_energy": self.sprint_energy,
             "carried_loot_count": self.carried_loot_count,
             "carried_loot_value": self.carried_loot_value,
+            "health": self.health,
+            "alive": self.alive,
         }
