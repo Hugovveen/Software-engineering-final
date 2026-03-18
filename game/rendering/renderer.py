@@ -930,7 +930,6 @@ class Renderer:
         """Draw minimal lobby overlay: player names + bottom prompt."""
         sw, sh = screen.get_size()
         font_name = pygame.font.SysFont("monospace", 22)
-        font_prompt = pygame.font.SysFont("monospace", 18)
 
         players = game_state.get("players", [])
         player_count = len(players)
@@ -947,18 +946,17 @@ class Renderer:
             pygame.draw.circle(screen, (100, 220, 100), (row_x + 5, row_y + 10), 5)
             screen.blit(name_surf, (row_x + 14, row_y - 1))
 
-        # Bottom prompt
-        bottom_y = sh - 50
+        # Bottom prompt — always visible with dark backing
+        font_prompt = pygame.font.SysFont("monospace", 22)
+        bottom_y = sh - 60
         prompt_text = "ready to embark on this adventure? press ENTER when ready"
-        if player_count < 2:
-            # Blink slowly (toggle every ~1s)
-            blink = int(time.perf_counter()) % 2 == 0
-            if blink:
-                surf = font_prompt.render(prompt_text, True, (180, 170, 130))
-                screen.blit(surf, (sw // 2 - surf.get_width() // 2, bottom_y))
-        else:
-            surf = font_prompt.render(prompt_text, True, (220, 200, 140))
-            screen.blit(surf, (sw // 2 - surf.get_width() // 2, bottom_y))
+        surf = font_prompt.render(prompt_text, True, (220, 200, 140))
+        pad_x, pad_y = 20, 10
+        backing = pygame.Surface((surf.get_width() + pad_x * 2, surf.get_height() + pad_y * 2), pygame.SRCALPHA)
+        backing.fill((0, 0, 0, 160))
+        bx = sw // 2 - backing.get_width() // 2
+        screen.blit(backing, (bx, bottom_y - pad_y))
+        screen.blit(surf, (sw // 2 - surf.get_width() // 2, bottom_y))
 
     def draw_loading_screen(self, screen: pygame.Surface, progress: float) -> None:
         sw, sh = screen.get_size()

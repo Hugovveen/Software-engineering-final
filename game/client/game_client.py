@@ -247,9 +247,7 @@ class GameClient:
                     # --- LOBBY state input ---
                     elif self.client_state == "LOBBY":
                         if event.key == pygame.K_RETURN:
-                            player_count = len(self.game_state.get("players", []))
-                            if player_count >= 2:
-                                self.network.send({"type": "START_GAME"})
+                            self.network.send({"type": "START_GAME"})
                         elif event.key == pygame.K_e:
                             self.network.send({"type": "PLAYER_INTERACT"})
 

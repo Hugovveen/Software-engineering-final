@@ -304,7 +304,7 @@ class GameServer:
     def _handle_start_game(self, conn: socket.socket) -> None:
         if self.round_state != "LOBBY":
             return
-        if len(self.players) < 2:
+        if len(self.players) < 1:
             return
         self.round_state = "PLAYING"
         self._emit_event({
@@ -347,18 +347,18 @@ class GameServer:
     # ------------------------------------------------------------------
 
     def _broadcast_game_state(self) -> None:
-        # NEW — include new monsters and systems in state
+        playing = self.round_state == "PLAYING"
         all_monsters = [
             self.siren.to_dict(),
             self.angel.to_dict(),
             self.hollow.to_dict(),
-        ]
+        ] if playing else []
 
-        active_loot = [loot.to_dict() for loot in self._loot_items if not loot.collected]
+        active_loot = [loot.to_dict() for loot in self._loot_items if not loot.collected] if playing else []
         state_message = {
             "type": "GAME_STATE",
             "players": [p.to_dict() for p in self.players.values()],
-            "mimic":   self.mimic.to_dict(),
+            "mimic":   self.mimic.to_dict() if playing else {},
             "map": {
                 "platforms": self.world.platforms,
                 "ladders":   self.world.ladders,
@@ -427,42 +427,39 @@ class GameServer:
                         self._handle_start_game(conn)
 
             if now - last_tick >= target_dt:
-                # Hugo's mimic (unchanged)
-                self.mimic.update_random_walk(
-                    dt=target_dt,
-                    world_min_x=10,
-                    world_max_x=self.world.world_width - 40,
-                )
+                # Monsters only active during PLAYING
+                if self.round_state == "PLAYING":
+                    self.mimic.update_random_walk(
+                        dt=target_dt,
+                        world_min_x=10,
+                        world_max_x=self.world.world_width - 40,
+                    )
 
-                # NEW — update all new monsters
-                all_monsters = [self.siren, self.angel, self.hollow]
+                    all_monsters = [self.siren, self.angel, self.hollow]
 
-                self.siren.update(dt=target_dt, world=self.world, players=self.players)
-                self.angel.update(dt=target_dt, world=self.world, players=self.players)
+                    self.siren.update(dt=target_dt, world=self.world, players=self.players)
+                    self.angel.update(dt=target_dt, world=self.world, players=self.players)
 
-                # Hollow — handle group throw window
-                if self._throw_window > 0:
-                    self._throw_window -= 1
-                    if self._throw_window == 0 and self._pending_throws:
-                        if not self.hollow.group_redirect(self._pending_throws):
-                            # Not enough throws for group — use last one
-                            lx, ly = self._pending_throws[-1]
-                            self.hollow.redirect(lx, ly)
-                        self._pending_throws.clear()
+                    if self._throw_window > 0:
+                        self._throw_window -= 1
+                        if self._throw_window == 0 and self._pending_throws:
+                            if not self.hollow.group_redirect(self._pending_throws):
+                                lx, ly = self._pending_throws[-1]
+                                self.hollow.redirect(lx, ly)
+                            self._pending_throws.clear()
 
-                self.hollow.update(
-                    dt=target_dt,
-                    players=self.players,
-                    floor_y=self.world.floor_y(),
-                    world_min_x=10,
-                    world_max_x=self.world.world_width - 40,
-                )
+                    self.hollow.update(
+                        dt=target_dt,
+                        players=self.players,
+                        floor_y=self.world.floor_y(),
+                        world_min_x=10,
+                        world_max_x=self.world.world_width - 40,
+                    )
 
-                self._update_loot_entities(target_dt)
+                    self._update_loot_entities(target_dt)
 
-                # NEW — tick sanity and quota
-                self.sanity.update(self.players, all_monsters)
-                self.quota.tick()
+                    self.sanity.update(self.players, all_monsters)
+                    self.quota.tick()
                 if self.round_state == "PLAYING" and self.players:
                     if self.quota.to_dict().get("game_over", False):
                         self.round_state = "GAME_OVER"
