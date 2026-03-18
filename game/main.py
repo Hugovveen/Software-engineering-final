@@ -4,9 +4,11 @@ Usage examples:
 - python main.py server
 - python main.py client
 - python main.py preview
+- python main.py editor
 - python main.py --server
 - python main.py --client
 - python main.py --preview
+- python main.py --editor
 """
 
 from __future__ import annotations
@@ -15,17 +17,19 @@ import argparse
 
 from client.game_client import GameClient
 from enemy_preview import run_preview
+from level_layout_editor import run_layout_editor
 from server.game_server import GameServer
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for mode selection."""
     parser = argparse.ArgumentParser(description="Multiplayer 2D horror scaffold")
-    parser.add_argument("mode", nargs="?", choices=["server", "client", "preview"], help="Run as server, client, or local preview")
+    parser.add_argument("mode", nargs="?", choices=["server", "client", "preview", "editor"], help="Run as server, client, preview, or local layout editor")
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--server", action="store_true", help="Run the multiplayer server")
     mode_group.add_argument("--client", action="store_true", help="Run the pygame client")
     mode_group.add_argument("--preview", action="store_true", help="Run a local pygame enemy preview")
+    mode_group.add_argument("--editor", action="store_true", help="Run a local layout editor")
     parser.add_argument("--host", default=None, help="Server host override")
     parser.add_argument("--port", default=None, type=int, help="Server port override")
     args = parser.parse_args()
@@ -36,9 +40,11 @@ def parse_args() -> argparse.Namespace:
         args.mode = "client"
     elif args.preview:
         args.mode = "preview"
+    elif args.editor:
+        args.mode = "editor"
 
     if args.mode is None:
-        parser.error("Choose a mode: 'server', 'client', or 'preview' (or use --server / --client / --preview).")
+        parser.error("Choose a mode: 'server', 'client', 'preview', or 'editor' (or use --server / --client / --preview / --editor).")
 
     return args
 
@@ -54,6 +60,10 @@ def main() -> None:
 
     if args.mode == "preview":
         run_preview()
+        return
+
+    if args.mode == "editor":
+        run_layout_editor()
         return
 
     client = GameClient(host=args.host, port=args.port)

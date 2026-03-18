@@ -104,6 +104,8 @@ class GameClient:
                     return None
                 if event.key == pygame.K_f:
                     self._throw_item()
+                if event.key == pygame.K_e:
+                    self.network.send({"type": "PLAYER_INTERACT"})
 
         keys = pygame.key.get_pressed()
 
@@ -124,6 +126,9 @@ class GameClient:
             climb     = 1.0
             on_ladder = True
 
+        jump = bool(keys[pygame.K_SPACE])
+        sprint = bool(keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT])
+
         if self.self_id:
             self._facing_map[self.self_id] = self.facing_right
 
@@ -132,6 +137,8 @@ class GameClient:
             "move_x":    move_x,
             "climb":     climb,
             "on_ladder": on_ladder,
+            "jump":      jump,
+            "sprint":    sprint,
         }
 
     def _throw_item(self) -> None:

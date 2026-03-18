@@ -18,13 +18,16 @@ try:
     from config import (
         SCREEN_WIDTH, SCREEN_HEIGHT,
         FLASHLIGHT_RADIUS, FLASHLIGHT_ANGLE_DEG, DARKNESS_ALPHA,
+        FLASHLIGHT_CONE_ALPHA, FLASHLIGHT_GLOW_ALPHA,
     )
 except ImportError:
     SCREEN_WIDTH       = 1024
     SCREEN_HEIGHT      = 576
-    FLASHLIGHT_RADIUS  = 190
+    FLASHLIGHT_RADIUS  = 280
     FLASHLIGHT_ANGLE_DEG = 55
     DARKNESS_ALPHA     = 215
+    FLASHLIGHT_CONE_ALPHA = 70
+    FLASHLIGHT_GLOW_ALPHA = 45
 
 
 class LightingSystem:
@@ -128,7 +131,7 @@ class LightingSystem:
         """
         sx, sy = camera.world_to_screen(world_x, world_y)
         cx = sx + width  / 2
-        cy = sy + height / 2
+        cy = sy - height * 0.45
 
         # Sanity shrinks radius
         sanity_factor = max(0.35, sanity / 100.0)
@@ -149,10 +152,14 @@ class LightingSystem:
             ))
 
         if len(points) >= 3:
-            pygame.draw.polygon(self._overlay, (0, 0, 0, 0), points)
+            cone_alpha = max(0, min(255, int(FLASHLIGHT_CONE_ALPHA + (1.0 - sanity_factor) * 35.0)))
+            pygame.draw.polygon(self._overlay, (0, 0, 0, cone_alpha), points)
 
-        # Small ambient glow at player feet
-        pygame.draw.circle(self._overlay, (0, 0, 0, 0), (int(cx), int(cy)), 20)
+        # Local glow around player so silhouette remains visible.
+        torso_radius = max(30, int(height * 1.4))
+        feet_radius = max(18, int(height * 0.75))
+        self._cut_radial(int(cx), int(cy), torso_radius, cut_alpha=int(FLASHLIGHT_GLOW_ALPHA))
+        self._cut_radial(int(cx), int(sy + height * 0.35), feet_radius, cut_alpha=int(FLASHLIGHT_GLOW_ALPHA))
 
     def _cut_radial(
         self,
@@ -160,6 +167,7 @@ class LightingSystem:
         sy: int,
         radius: int,
         warm: bool = False,
+        cut_alpha: int = 0,
     ) -> None:
         """Cut a circular light area (campfire / flare).
 
@@ -167,8 +175,10 @@ class LightingSystem:
             sx, sy:  Screen coordinates of light center.
             radius:  Light radius in pixels.
             warm:    If True, add warm amber gradient ring.
+            cut_alpha: Remaining darkness alpha in the lit circle.
         """
-        pygame.draw.circle(self._overlay, (0, 0, 0, 0), (sx, sy), radius)
+        safe_alpha = max(0, min(255, int(cut_alpha)))
+        pygame.draw.circle(self._overlay, (0, 0, 0, safe_alpha), (sx, sy), radius)
 
         if warm:
             # Amber glow fringe

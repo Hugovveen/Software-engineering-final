@@ -32,7 +32,10 @@ class ClientNetwork:
         if self.sock is None:
             return
         payload = json.dumps(message) + "\n"
-        self.sock.sendall(payload.encode("utf-8"))
+        try:
+            self.sock.sendall(payload.encode("utf-8"))
+        except (BlockingIOError, OSError):
+            return
 
     def receive_many(self) -> list[dict[str, Any]]:
         """Receive zero or more complete JSON messages from the socket buffer."""
@@ -40,13 +43,16 @@ class ClientNetwork:
             return []
 
         messages: list[dict[str, Any]] = []
-        try:
-            chunk = self.sock.recv(8192)
-            if not chunk:
-                return messages
-            self._buffer += chunk.decode("utf-8")
-        except BlockingIOError:
-            return messages
+        while True:
+            try:
+                chunk = self.sock.recv(8192)
+                if not chunk:
+                    break
+                self._buffer += chunk.decode("utf-8")
+            except BlockingIOError:
+                break
+            except OSError:
+                break
 
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
