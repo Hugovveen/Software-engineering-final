@@ -31,6 +31,7 @@ class Player:
     sprint_energy: float = SPRINT_MAX_ENERGY
     health: int = 100
     alive: bool = True
+    skin: str = "researcher"
     carried_loot_count: int = 0
     carried_loot_value: int = 0
 
@@ -56,4 +57,5 @@ class Player:
             "carried_loot_value": self.carried_loot_value,
             "health": self.health,
             "alive": self.alive,
+            "skin": self.skin,
         }

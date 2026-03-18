@@ -83,6 +83,7 @@ class GameServer:
         self._throw_window = 0   # frame counter for simultaneous throw window
         self._events: list[dict] = []
         self.round_state: str = "LOBBY"
+        self.taken_skins: set[str] = set()
 
         self._loot_items: list[Loot] = []
         self._next_loot_id = 1
@@ -213,18 +214,33 @@ class GameServer:
     def _handle_join(self, conn: socket.socket, message: dict) -> None:
         player_id = str(uuid.uuid4())[:8]
         name      = str(message.get("name", "Player"))
-        player    = Player(player_id=player_id, name=name)
+
+        # Skin assignment — first player gets their choice, second gets the other
+        all_skins = {"researcher", "student"}
+        requested_skin = str(message.get("skin", "researcher"))
+        if requested_skin not in all_skins:
+            requested_skin = "researcher"
+        if requested_skin in self.taken_skins:
+            remaining = all_skins - self.taken_skins
+            requested_skin = next(iter(remaining)) if remaining else "researcher"
+        self.taken_skins.add(requested_skin)
+
+        player = Player(player_id=player_id, name=name, skin=requested_skin)
         self.players[player_id]   = player
         self.connections[conn]    = player_id
-        self.facing_map[player_id] = True   # NEW — default facing right
+        self.facing_map[player_id] = True
 
-        # NEW — register with sanity system
         self.sanity.register(player_id)
-        self.round_state = "PLAYING"
 
         ServerNetwork.send(
             conn,
-            {"type": "PLAYER_JOIN", "id": player_id, "name": name},
+            {
+                "type": "PLAYER_JOIN",
+                "id": player_id,
+                "name": name,
+                "skin": requested_skin,
+                "taken_skins": list(self.taken_skins),
+            },
         )
 
     def _handle_move(self, conn: socket.socket, message: dict, dt: float) -> None:
@@ -285,6 +301,19 @@ class GameServer:
                                   "collected": self.quota.collected,
                                   "quota": self.quota.quota})
 
+    def _handle_start_game(self, conn: socket.socket) -> None:
+        if self.round_state != "LOBBY":
+            return
+        if len(self.players) < 2:
+            return
+        self.round_state = "PLAYING"
+        self._emit_event({
+            "type": "ROUND_STATE_CHANGED",
+            "state": "PLAYING",
+            "round_number": 1,
+            "reason": "host started",
+        })
+
     def _handle_interact(self, conn: socket.socket) -> None:
         player_id = self.connections.get(conn)
         if not player_id:
@@ -301,9 +330,12 @@ class GameServer:
         player_id = self.connections.pop(conn, None)
         self.buffers.pop(conn, None)
         if player_id is not None:
-            self.facing_map.pop(player_id, None)   # NEW
+            self.facing_map.pop(player_id, None)
+            player = self.players.get(player_id)
+            if player is not None:
+                self.taken_skins.discard(player.skin)
         if player_id:
-            self.sanity.remove(player_id)      # NEW
+            self.sanity.remove(player_id)
             self.players.pop(player_id, None)
         try:
             conn.close()
@@ -391,6 +423,8 @@ class GameServer:
                         self._handle_interact(conn)
                     elif msg_type == "SELL_SAMPLES":    # NEW
                         self._handle_sell_samples(conn, msg)
+                    elif msg_type == "START_GAME":
+                        self._handle_start_game(conn)
 
             if now - last_tick >= target_dt:
                 # Hugo's mimic (unchanged)

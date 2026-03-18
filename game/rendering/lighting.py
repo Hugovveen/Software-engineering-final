@@ -12,6 +12,8 @@ just before pygame.display.flip().
 from __future__ import annotations
 
 import math
+import random
+
 import pygame
 
 try:
@@ -21,30 +23,21 @@ try:
         FLASHLIGHT_CONE_ALPHA, FLASHLIGHT_GLOW_ALPHA,
     )
 except ImportError:
-    SCREEN_WIDTH       = 1024
-    SCREEN_HEIGHT      = 576
-    FLASHLIGHT_RADIUS  = 280
-    FLASHLIGHT_ANGLE_DEG = 55
-    DARKNESS_ALPHA     = 215
-    FLASHLIGHT_CONE_ALPHA = 70
-    FLASHLIGHT_GLOW_ALPHA = 45
+    SCREEN_WIDTH       = 1536
+    SCREEN_HEIGHT      = 1024
+    FLASHLIGHT_RADIUS  = 800
+    FLASHLIGHT_ANGLE_DEG = 30
+    DARKNESS_ALPHA     = 230
+    FLASHLIGHT_CONE_ALPHA = 150
+    FLASHLIGHT_GLOW_ALPHA = 52
+
+# Flicker
+FLICKER_INTERVAL = 4        # re-roll every N frames
+FLICKER_RANGE    = 0.03     # ±3 %
 
 
 class LightingSystem:
-    """Manages per-frame darkness overlay with flashlight cone cutouts.
-
-    Approach:
-        1. Fill a full-screen SRCALPHA surface with near-black.
-        2. For each player: cut out a cone in their facing direction.
-        3. For each campfire: cut out a warm radial circle.
-        4. Blit the overlay onto the main surface.
-        5. Optionally draw vignette for low-sanity players.
-
-    Usage:
-        lighting = LightingSystem()
-        # inside draw loop, after drawing world + entities:
-        lighting.apply(screen, players_data, facing_map, campfires, sanity)
-    """
+    """Manages per-frame darkness overlay with flashlight cone cutouts."""
 
     def __init__(
         self,
@@ -54,6 +47,8 @@ class LightingSystem:
         self.width  = width
         self.height = height
         self._overlay = pygame.Surface((width, height), pygame.SRCALPHA)
+        self._frame_count = 0
+        self._flicker = 1.0
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -70,21 +65,13 @@ class LightingSystem:
         self_id: str | None,
         is_night: bool = False,
     ) -> None:
-        """Draw darkness overlay with light cutouts onto screen.
+        self._frame_count += 1
+        if self._frame_count % FLICKER_INTERVAL == 0:
+            self._flicker = 1.0 + random.uniform(-FLICKER_RANGE, FLICKER_RANGE)
 
-        Args:
-            screen:       Main pygame surface.
-            camera:       Hugo's Camera object for coordinate conversion.
-            players_data: List of player dicts from GAME_STATE.
-            facing_map:   {player_id: bool} True = facing right.
-            campfires:    List of (world_x, world_y, radius) tuples.
-            sanity_map:   {player_id: float} sanity values.
-            self_id:      Local player's id (for sanity effect application).
-            is_night:     Increases base darkness at night.
-        """
         alpha = min(245, DARKNESS_ALPHA + (30 if is_night else 0))
         self._overlay.fill((0, 0, 0, 0))
-        pygame.draw.rect(self._overlay, (0, 0, 0, alpha),
+        pygame.draw.rect(self._overlay, (5, 8, 20, alpha),
                          pygame.Rect(0, 0, self.width, self.height))
 
         for p in players_data:
@@ -100,14 +87,13 @@ class LightingSystem:
 
         screen.blit(self._overlay, (0, 0))
 
-        # Sanity vignette for local player only
         if self_id:
             sanity = sanity_map.get(self_id, 100.0)
             if sanity < 35:
                 self._draw_vignette(screen, sanity)
 
     # ------------------------------------------------------------------
-    # Light cutouts
+    # Flashlight cone — original radial approach, slightly elliptical
     # ------------------------------------------------------------------
 
     def _cut_cone(
@@ -120,46 +106,43 @@ class LightingSystem:
         facing_right: bool,
         sanity: float,
     ) -> None:
-        """Cut a flashlight cone for one player.
-
-        Args:
-            world_x, world_y: Player world position.
-            width, height:    Player sprite dimensions.
-            camera:           Camera for coordinate conversion.
-            facing_right:     True = cone points right, False = left.
-            sanity:           Sanity value — shrinks cone at low sanity.
-        """
         sx, sy = camera.world_to_screen(world_x, world_y)
-        cx = sx + width  / 2
+        cx = sx + width / 2
         cy = sy - height * 0.45
 
-        # Sanity shrinks radius
         sanity_factor = max(0.35, sanity / 100.0)
-        radius        = FLASHLIGHT_RADIUS * sanity_factor
+        radius = FLASHLIGHT_RADIUS * sanity_factor * self._flicker
 
-        # Cone angle: 0° = right, 180° = left
+        # Slightly elliptical: 1.25x wider horizontally than vertically
+        radius_x = radius * 1.25
+        radius_y = radius
+
         base_angle = 0.0 if facing_right else 180.0
-        half       = FLASHLIGHT_ANGLE_DEG / 2
-        segments   = 18
+        half = FLASHLIGHT_ANGLE_DEG / 2
+        segments = 18
 
         points = [(cx, cy)]
         for i in range(segments + 1):
             angle_deg = base_angle - half + (FLASHLIGHT_ANGLE_DEG * i / segments)
             angle_rad = math.radians(angle_deg)
             points.append((
-                cx + math.cos(angle_rad) * radius,
-                cy + math.sin(angle_rad) * radius,
+                cx + math.cos(angle_rad) * radius_x,
+                cy + math.sin(angle_rad) * radius_y,
             ))
 
         if len(points) >= 3:
             cone_alpha = max(0, min(255, int(FLASHLIGHT_CONE_ALPHA + (1.0 - sanity_factor) * 35.0)))
             pygame.draw.polygon(self._overlay, (0, 0, 0, cone_alpha), points)
 
-        # Local glow around player so silhouette remains visible.
-        torso_radius = max(30, int(height * 1.4))
+        # Local glow around player
+        torso_radius = max(30, int(height * 1.4 * self._flicker))
         feet_radius = max(18, int(height * 0.75))
         self._cut_radial(int(cx), int(cy), torso_radius, cut_alpha=int(FLASHLIGHT_GLOW_ALPHA))
         self._cut_radial(int(cx), int(sy + height * 0.35), feet_radius, cut_alpha=int(FLASHLIGHT_GLOW_ALPHA))
+
+    # ------------------------------------------------------------------
+    # Radial cutout (campfires, ambient glow)
+    # ------------------------------------------------------------------
 
     def _cut_radial(
         self,
@@ -169,19 +152,10 @@ class LightingSystem:
         warm: bool = False,
         cut_alpha: int = 0,
     ) -> None:
-        """Cut a circular light area (campfire / flare).
-
-        Args:
-            sx, sy:  Screen coordinates of light center.
-            radius:  Light radius in pixels.
-            warm:    If True, add warm amber gradient ring.
-            cut_alpha: Remaining darkness alpha in the lit circle.
-        """
         safe_alpha = max(0, min(255, int(cut_alpha)))
         pygame.draw.circle(self._overlay, (0, 0, 0, safe_alpha), (sx, sy), radius)
 
         if warm:
-            # Amber glow fringe
             for r in range(radius, radius + 30, 5):
                 fade_alpha = max(0, 80 - (r - radius) * 4)
                 glow_surf  = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
@@ -194,14 +168,8 @@ class LightingSystem:
     # ------------------------------------------------------------------
 
     def _draw_vignette(self, screen: pygame.Surface, sanity: float) -> None:
-        """Draw darkening screen edges that intensify at low sanity.
-
-        Args:
-            screen: Main pygame surface.
-            sanity: Player's current sanity value.
-        """
         intensity = int(180 * (1.0 - sanity / 35.0))
-        vig       = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        vig = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
 
         steps = 10
         for i in range(steps):

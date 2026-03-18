@@ -28,6 +28,11 @@ Free horror SFX sources listed at bottom of this file.
 import pygame
 import os
 from enum import Enum, auto
+from pathlib import Path
+
+# Resolve paths relative to the game root (parent of systems/)
+_GAME_ROOT = Path(__file__).resolve().parent.parent
+_AUDIO_DIR = _GAME_ROOT / "assets" / "audio"
 
 
 class MusicState(Enum):
@@ -38,24 +43,24 @@ class MusicState(Enum):
 
 
 MUSIC_TRACKS = {
-    MusicState.LOBBY:   "assets/audio/music/lobby_ambient.ogg",
-    MusicState.GAME:    "assets/audio/music/game_ambient.ogg",
-    MusicState.TENSION: "assets/audio/music/tension_sting.ogg",
+    MusicState.LOBBY:   str(_AUDIO_DIR / "music" / "lobby_ambient.ogg"),
+    MusicState.GAME:    str(_AUDIO_DIR / "music" / "game_ambient.ogg"),
+    MusicState.TENSION: str(_AUDIO_DIR / "music" / "tension_sting.ogg"),
 }
 
 SFX_PATHS = {
-    "footstep":      ["assets/audio/sfx/footstep_01.ogg",
-                      "assets/audio/sfx/footstep_02.ogg",
-                      "assets/audio/sfx/footstep_03.ogg"],
-    "door_creak":    "assets/audio/sfx/door_creak.ogg",
-    "item_pickup":   "assets/audio/sfx/item_pickup.ogg",
-    "item_drop":     "assets/audio/sfx/item_drop.ogg",
-    "sanity_low":    "assets/audio/sfx/sanity_low.ogg",
-    "monster_nearby":"assets/audio/sfx/monster_nearby.ogg",
-    "monster_siren": "assets/audio/sfx/monster_siren.ogg",
-    "player_death":  "assets/audio/sfx/player_death.ogg",
-    "game_over":     "assets/audio/sfx/game_over.ogg",
-    "heartbeat":     "assets/audio/sfx/heartbeat.ogg",
+    "footstep":      [str(_AUDIO_DIR / "sfx" / "footstep_01.ogg"),
+                      str(_AUDIO_DIR / "sfx" / "footstep_02.ogg"),
+                      str(_AUDIO_DIR / "sfx" / "footstep_03.ogg")],
+    "door_creak":    str(_AUDIO_DIR / "sfx" / "door_creak.ogg"),
+    "item_pickup":   str(_AUDIO_DIR / "sfx" / "item_pickup.ogg"),
+    "item_drop":     str(_AUDIO_DIR / "sfx" / "item_drop.ogg"),
+    "sanity_low":    str(_AUDIO_DIR / "sfx" / "sanity_low.ogg"),
+    "monster_nearby":str(_AUDIO_DIR / "sfx" / "monster_nearby.ogg"),
+    "monster_siren": str(_AUDIO_DIR / "sfx" / "monster_siren.ogg"),
+    "player_death":  str(_AUDIO_DIR / "sfx" / "player_death.ogg"),
+    "game_over":     str(_AUDIO_DIR / "sfx" / "game_over.ogg"),
+    "heartbeat":     str(_AUDIO_DIR / "sfx" / "heartbeat.ogg"),
 }
 
 MUSIC_VOLUME  = 0.45   # keep music under SFX in a horror game

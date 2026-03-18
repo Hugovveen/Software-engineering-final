@@ -13,6 +13,8 @@ CHANGES FROM HUGO'S VERSION (marked # NEW):
 from __future__ import annotations
 
 import math
+import random
+import time
 from pathlib import Path
 
 import pygame
@@ -48,6 +50,8 @@ class Renderer:
     def __init__(self, screen_width: int, screen_height: int) -> None:
         # NEW — lighting system instance
         self.lighting = LightingSystem(screen_width, screen_height)
+        self._screen_width = screen_width
+        self._screen_height = screen_height
         self._font    = None   # lazy init after pygame.init()
         self._assets_loaded = False
         self._wall_surface: pygame.Surface | None = None
@@ -55,13 +59,17 @@ class Renderer:
         self._basement_floor_surface: pygame.Surface | None = None
         self._loot_surfaces: list[pygame.Surface] = []
         self._player_frames: list[pygame.Surface] = []
+        self._skin_frames: dict[str, list[pygame.Surface]] = {}
         self._player_animation: dict[str, AnimationPlayer] = {}
         self._enemy_frames: dict[str, list[pygame.Surface]] = {}
         self._enemy_animation: dict[str, AnimationPlayer] = {}
         self._scaled_player_frame_cache: dict[tuple[int, int], list[pygame.Surface]] = {}
+        self._scaled_skin_frame_cache: dict[tuple[str, int, int], list[pygame.Surface]] = {}
         self._scaled_enemy_frame_cache: dict[tuple[str, int, int], list[pygame.Surface]] = {}
         self._scaled_floor_cache: dict[tuple[str, int, int], pygame.Surface] = {}
         self._scaled_loot_cache: dict[tuple[int, int, int], pygame.Surface] = {}
+        self._screen_image_cache: dict[str, pygame.Surface] = {}
+        self._char_preview_cache: dict[str, pygame.Surface] = {}
 
     def _get_font(self, size: int = 14) -> pygame.font.Font:
         """Lazy-load a monospace font."""
@@ -139,6 +147,11 @@ class Renderer:
             self._enemy_frames["angel"] = [pygame.image.load(str(angel_idle_still)).convert_alpha()]
 
         self._player_frames = load_frames(player_walk_dir)
+        self._skin_frames["researcher"] = self._player_frames
+        student_raw = load_frames(assets_root / "secondplayer" / "walking")
+        self._skin_frames["student"] = [
+            pygame.transform.flip(frame, True, False) for frame in student_raw
+        ]
         self._assets_loaded = True
 
     def _get_scaled_player_frames(self, target_w: int, target_h: int) -> list[pygame.Surface]:
@@ -152,6 +165,18 @@ class Renderer:
 
         scaled = [pygame.transform.scale(frame, (target_w, target_h)) for frame in self._player_frames]
         self._scaled_player_frame_cache[cache_key] = scaled
+        return scaled
+
+    def _get_scaled_skin_frames(self, skin: str, target_w: int, target_h: int) -> list[pygame.Surface]:
+        cache_key = (skin, target_w, target_h)
+        if cache_key in self._scaled_skin_frame_cache:
+            return self._scaled_skin_frame_cache[cache_key]
+        source = self._skin_frames.get(skin, self._player_frames)
+        if not source:
+            self._scaled_skin_frame_cache[cache_key] = []
+            return []
+        scaled = [pygame.transform.scale(f, (target_w, target_h)) for f in source]
+        self._scaled_skin_frame_cache[cache_key] = scaled
         return scaled
 
     def _get_scaled_enemy_frames(self, sprite_key: str, target_w: int, target_h: int) -> list[pygame.Surface]:
@@ -260,19 +285,21 @@ class Renderer:
         ph = int(player.get("h", 48))
         vx = float(player.get("vx", 0.0))
         player_id = str(player.get("id", "player"))
+        skin = str(player.get("skin", "researcher"))
         sx, sy = camera.world_to_screen(px, py)
 
         base_scale = self.PLAYER_SPRITE_SCALE * self.ENTITY_RENDER_SCALE
         draw_w = max(1, int(pw * base_scale))
         draw_h = max(1, int(ph * base_scale))
-        frames = self._get_scaled_player_frames(draw_w, draw_h)
+        frames = self._get_scaled_skin_frames(skin, draw_w, draw_h)
         frame: pygame.Surface | None = None
 
         if frames:
-            anim = self._player_animation.get(player_id)
+            anim_key = f"{player_id}:{skin}"
+            anim = self._player_animation.get(anim_key)
             if anim is None or anim.frames is not frames:
                 anim = AnimationPlayer(frames, fps=10.0, loop=True)
-                self._player_animation[player_id] = anim
+                self._player_animation[anim_key] = anim
 
             if abs(vx) > 0.01:
                 anim.update(1.0 / 60.0)
@@ -429,6 +456,7 @@ class Renderer:
         facing_map: dict | None = None,     # NEW
         sanity_map: dict | None = None,     # NEW
         enable_lighting: bool = True,
+        skip_wall: bool = False,
     ) -> None:
         """Render world and entities from the latest game state snapshot.
 
@@ -456,8 +484,9 @@ class Renderer:
                 camera.offset_x -= effects["shake_x"]
 
         # --- World ---
-        screen.fill(self.BG_COLOR)
-        self._draw_background(screen, camera)
+        if not skip_wall:
+            screen.fill(self.BG_COLOR)
+            self._draw_background(screen, camera)
 
         map_data = game_state.get("map", {})
         self._draw_platforms(screen, camera, map_data.get("platforms", []))
@@ -548,8 +577,6 @@ class Renderer:
         # Restore camera offset after shake
         if effects.get("shake_x") and self_id:
             camera.offset_x = orig_offset[0]
-
-        pygame.display.flip()
 
     # ------------------------------------------------------------------
     # NEW — monster rendering
@@ -755,45 +782,253 @@ class Renderer:
             "shake_x": random.randint(-intensity, intensity),
             "shake_y": random.randint(-intensity, intensity),
         }
-    def draw_lobby(self, screen: pygame.Surface) -> None:
-        """Draw the lobby/title screen while waiting for game to start."""
+
+    # ------------------------------------------------------------------
+    # Screen image helper (cached, scaled to screen size)
+    # ------------------------------------------------------------------
+
+    def _get_screen_image(self, key: str, path: Path) -> pygame.Surface | None:
+        cached = self._screen_image_cache.get(key)
+        if cached is not None:
+            return cached
+        if not path.exists():
+            return None
+        raw = pygame.image.load(str(path)).convert()
+        scaled = pygame.transform.scale(raw, (self._screen_width, self._screen_height))
+        self._screen_image_cache[key] = scaled
+        return scaled
+
+    # ------------------------------------------------------------------
+    # Static screen draws (title, lobby, loading, game over)
+    # ------------------------------------------------------------------
+
+    LOADING_LINES = [
+        (0.05, "initialising map..."),
+        (0.15, "loading entities..."),
+        (0.30, "waking the siren..."),
+        (0.50, "calibrating sanity systems..."),
+        (0.65, "seeding the forest..."),
+        (0.80, "suppressing emergency protocols..."),
+        (0.95, "ready."),
+    ]
+
+    def _get_char_preview(self, skin: str) -> pygame.Surface | None:
+        if skin in self._char_preview_cache:
+            return self._char_preview_cache[skin]
+        assets_root = Path(__file__).resolve().parents[1] / "assets"
+        if skin == "researcher":
+            path = assets_root / "player" / "idle.png"
+        else:
+            path = assets_root / "secondplayer" / "idle.png"
+        if not path.exists():
+            return None
+        raw = pygame.image.load(str(path)).convert_alpha()
+        # Flip student to match researcher facing direction
+        if skin == "student":
+            raw = pygame.transform.flip(raw, True, False)
+        # Scale to fit inside a 100x130 box with padding
+        max_w, max_h = 90, 110
+        raw_w, raw_h = raw.get_width(), raw.get_height()
+        scale = min(max_w / raw_w, max_h / raw_h)
+        scaled = pygame.transform.scale(raw, (int(raw_w * scale), int(raw_h * scale)))
+        self._char_preview_cache[skin] = scaled
+        return scaled
+
+    def draw_title_screen(
+        self,
+        screen: pygame.Surface,
+        player_name: str,
+        selected_skin: str,
+        cursor_visible: bool,
+    ) -> None:
         sw, sh = screen.get_size()
-        screen.fill((8, 12, 7))
-        font_big = pygame.font.SysFont("monospace", 72, bold=True)
-        font_small = pygame.font.SysFont("monospace", 14)
+        assets_root = Path(__file__).resolve().parents[1] / "assets"
+        bg = self._get_screen_image("title", assets_root / "wall" / "start_loading" / "title_screen_grove.png")
+        if bg is not None:
+            screen.blit(bg, (0, 0))
+        else:
+            screen.fill((8, 12, 7))
 
-        title = font_big.render("GROVE", True, (200, 212, 168))
-        screen.blit(title, (sw // 2 - title.get_width() // 2,
-                                sh // 2 - title.get_height() // 2 - 40))
+        font_label = pygame.font.SysFont("monospace", 20)
+        font_input = pygame.font.SysFont("monospace", 28)
+        font_prompt = pygame.font.SysFont("monospace", 26)
+        font_skin = pygame.font.SysFont("monospace", 16)
 
-        sub = font_small.render("waiting for players...", True, (50, 80, 40))
-        screen.blit(sub, (sw // 2 - sub.get_width() // 2,
-                            sh // 2 + 60))
+        # --- Layout: character boxes ABOVE the baked-in "GROVE" title ---
+        box_w, box_h = 120, 150
+        box_top = int(sh * 0.15)
+        spacing = 180
+        skins = ["researcher", "student"]
+
+        for i, skin in enumerate(skins):
+            cx = sw // 2 + (i * 2 - 1) * (spacing // 2)
+            is_selected = skin == selected_skin
+
+            box_rect = pygame.Rect(cx - box_w // 2, box_top, box_w, box_h)
+            panel = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+            if is_selected:
+                panel.fill((40, 80, 40, 180))
+            else:
+                panel.fill((0, 0, 0, 120))
+            screen.blit(panel, box_rect.topleft)
+            if is_selected:
+                pygame.draw.rect(screen, (100, 220, 100), box_rect, 2)
+
+            # Character preview sprite — centered inside the box
+            preview = self._get_char_preview(skin)
+            if preview is not None:
+                px = cx - preview.get_width() // 2
+                py = box_top + (box_h - 24 - preview.get_height()) // 2 + 4
+                screen.blit(preview, (px, py))
+
+            # Skin label at bottom of box
+            label = font_skin.render(skin, True, (200, 212, 168) if is_selected else (120, 130, 110))
+            screen.blit(label, (cx - label.get_width() // 2, box_top + box_h - 22))
+
+        # Arrow hint below boxes
+        hint_y = box_top + box_h + 6
+        arrow_hint = font_skin.render("<  arrow keys to select  >", True, (140, 150, 120))
+        screen.blit(arrow_hint, (sw // 2 - arrow_hint.get_width() // 2, hint_y))
+
+        # --- Name input below character selection ---
+        name_y = hint_y + 36
+        name_label = font_label.render("enter your name:", True, (160, 170, 140))
+        name_panel_w = 380
+        name_panel_h = 44
+        name_panel = pygame.Surface((name_panel_w, name_panel_h), pygame.SRCALPHA)
+        name_panel.fill((0, 0, 0, 170))
+        name_panel_x = sw // 2 - name_panel_w // 2
+        screen.blit(name_label, (name_panel_x, name_y - 24))
+        screen.blit(name_panel, (name_panel_x, name_y))
+        pygame.draw.rect(screen, (80, 100, 70), pygame.Rect(name_panel_x, name_y, name_panel_w, name_panel_h), 1)
+
+        display_name = player_name
+        if cursor_visible:
+            display_name += "_"
+        name_surf = font_input.render(display_name, True, (220, 230, 200))
+        screen.blit(name_surf, (name_panel_x + 12, name_y + 8))
+
+        # --- ENTER prompt at the very bottom ---
+        prompt_y = sh - 60
+        if player_name.strip():
+            text = font_prompt.render("Press ENTER to connect", True, (220, 200, 140))
+        else:
+            text = font_prompt.render("type a name to continue", True, (100, 110, 90))
+        text_panel = pygame.Surface((text.get_width() + 32, text.get_height() + 16), pygame.SRCALPHA)
+        text_panel.fill((0, 0, 0, 150))
+        screen.blit(text_panel, (sw // 2 - text_panel.get_width() // 2, prompt_y))
+        screen.blit(text, (sw // 2 - text.get_width() // 2, prompt_y + 8))
+
+    def draw_lobby_background(self, screen: pygame.Surface) -> None:
+        """Blit the lobby background image fullscreen."""
+        assets_root = Path(__file__).resolve().parents[1] / "assets"
+        bg = self._get_screen_image("lobby_bg", assets_root / "wall" / "lobby" / "lobby_background.png")
+        if bg is not None:
+            screen.blit(bg, (0, 0))
+
+    def draw_lobby_overlay(self, screen: pygame.Surface, game_state: dict) -> None:
+        """Draw minimal lobby overlay: player names + bottom prompt."""
+        sw, sh = screen.get_size()
+        font_name = pygame.font.SysFont("monospace", 22)
+        font_prompt = pygame.font.SysFont("monospace", 18)
+
+        players = game_state.get("players", [])
+        player_count = len(players)
+
+        # Player names with green dots — centered on screen
+        total_height = player_count * 30
+        start_y = sh // 2 - total_height // 2
+        for i, p in enumerate(players):
+            name = str(p.get("name", "Player"))
+            row_y = start_y + i * 30
+            name_surf = font_name.render(name, True, (200, 230, 180))
+            row_w = 14 + 8 + name_surf.get_width()  # dot + gap + text
+            row_x = sw // 2 - row_w // 2
+            pygame.draw.circle(screen, (100, 220, 100), (row_x + 5, row_y + 10), 5)
+            screen.blit(name_surf, (row_x + 14, row_y - 1))
+
+        # Bottom prompt
+        bottom_y = sh - 50
+        prompt_text = "ready to embark on this adventure? press ENTER when ready"
+        if player_count < 2:
+            # Blink slowly (toggle every ~1s)
+            blink = int(time.perf_counter()) % 2 == 0
+            if blink:
+                surf = font_prompt.render(prompt_text, True, (180, 170, 130))
+                screen.blit(surf, (sw // 2 - surf.get_width() // 2, bottom_y))
+        else:
+            surf = font_prompt.render(prompt_text, True, (220, 200, 140))
+            screen.blit(surf, (sw // 2 - surf.get_width() // 2, bottom_y))
+
+    def draw_loading_screen(self, screen: pygame.Surface, progress: float) -> None:
+        sw, sh = screen.get_size()
+        assets_root = Path(__file__).resolve().parents[1] / "assets"
+        bg = self._get_screen_image("loading", assets_root / "wall" / "start_loading" / "loading_screen.png")
+        if bg is not None:
+            screen.blit(bg, (0, 0))
+        else:
+            screen.fill((6, 8, 6))
+
+        font = pygame.font.SysFont("monospace", 14)
+        clamped = max(0.0, min(1.0, progress))
+
+        # --- Log lines ---
+        log_x = sw // 2 - 200
+        log_y = sh // 2 + 40
+        for threshold, text in self.LOADING_LINES:
+            if clamped >= threshold:
+                color = (80, 180, 80) if text == "ready." else (140, 160, 130)
+                surf = font.render(f"> {text}", True, color)
+                screen.blit(surf, (log_x, log_y))
+                log_y += 20
+
+        # --- Loading bar ---
+        bar_w = 400
+        bar_h = 14
+        bar_x = (sw - bar_w) // 2
+        bar_y = sh - 80
+        filled = int(bar_w * clamped)
+
+        pygame.draw.rect(screen, (30, 30, 30), pygame.Rect(bar_x, bar_y, bar_w, bar_h))
+        pygame.draw.rect(screen, (80, 180, 80), pygame.Rect(bar_x, bar_y, filled, bar_h))
+        pygame.draw.rect(screen, (100, 120, 80), pygame.Rect(bar_x, bar_y, bar_w, bar_h), 1)
+
+        pct = font.render(f"{int(clamped * 100)}%", True, (200, 200, 180))
+        screen.blit(pct, (sw // 2 - pct.get_width() // 2, bar_y + bar_h + 8))
+
+        # --- Scanline effect (cached) ---
+        scanline = self._screen_image_cache.get("_scanline")
+        if scanline is None:
+            scanline = pygame.Surface((sw, sh), pygame.SRCALPHA)
+            for y in range(0, sh, 3):
+                pygame.draw.line(scanline, (0, 0, 0, 25), (0, y), (sw, y))
+            self._screen_image_cache["_scanline"] = scanline
+        screen.blit(scanline, (0, 0))
 
     def draw_game_over(self, screen: pygame.Surface, game_state: dict) -> None:
-        """Draw the end screen when all players are dead."""
         sw, sh = screen.get_size()
-        screen.fill((8, 6, 6))
-        font_big = pygame.font.SysFont("monospace", 64, bold=True)
-        font_med = pygame.font.SysFont("monospace", 14)
+        assets_root = Path(__file__).resolve().parents[1] / "assets"
+        bg = self._get_screen_image("game_over", assets_root / "wall" / "dead_screen" / "dead_screen_multiplayer.png")
+        if bg is not None:
+            screen.blit(bg, (0, 0))
+        else:
+            screen.fill((8, 6, 6))
 
-        title = font_big.render("ALL LOST", True, (200, 168, 120))
-        screen.blit(title, (sw // 2 - title.get_width() // 2,
-                                sh // 2 - title.get_height() // 2 - 60))
+        font_name = pygame.font.SysFont("monospace", 22)
+        font_info = pygame.font.SysFont("monospace", 18)
 
-        sub = font_med.render("the forest remembers", True, (60, 40, 30))
-        screen.blit(sub, (sw // 2 - sub.get_width() // 2,
-                            sh // 2 + 20))
+        players = game_state.get("players", [])
+        start_y = sh // 2 - 20
+        for i, p in enumerate(players):
+            name = str(p.get("name", "player"))
+            line = font_name.render(f"{name}  —  CONSUMED", True, (160, 60, 60))
+            screen.blit(line, (sw // 2 - line.get_width() // 2, start_y + i * 28))
 
         quota = game_state.get("quota", {})
         collected = quota.get("collected", 0)
         target = quota.get("quota", 200)
-        info = font_med.render(f"quota fulfilled: {collected}/{target}", True, (80, 60, 40))
-        screen.blit(info, (sw // 2 - info.get_width() // 2,
-                            sh // 2 + 50))
+        info = font_info.render(f"samples collected: {collected} / {target}", True, (120, 90, 70))
+        screen.blit(info, (sw // 2 - info.get_width() // 2, sh - 100))
 
-        players = game_state.get("players", [])
-        for i, p in enumerate(players):
-            line = font_med.render(f"{p.get('name', 'player')} — consumed", True, (100, 50, 50))
-            screen.blit(line, (sw // 2 - line.get_width() // 2,
-                                sh // 2 + 85 + i * 22))
+        prompt = font_info.render("Press ENTER to return", True, (140, 120, 100))
+        screen.blit(prompt, (sw // 2 - prompt.get_width() // 2, sh - 60))
