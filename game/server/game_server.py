@@ -331,8 +331,8 @@ class GameServer:
                 "platforms": self.world.platforms,
                 "ladders":   self.world.ladders,
                 "extraction_zone": getattr(self.world, "extraction_zone", (0, 0, 0, 0)),
-            "round": {"state": self.round_state, "number": 1, "time_remaining": 0.0},
             },
+            "round": {"state": self.round_state, "number": 1, "time_remaining": 0.0},
             # NEW fields
             "monsters":   all_monsters,
             "sanity":     self.sanity.to_dict(),

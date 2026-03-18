@@ -173,31 +173,31 @@ class GameClient:
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
                     self.network.send({"type": "PLAYER_INTERACT"})
 
-        self._handle_network_messages()
-        state = self.round_info.get("state", "LOBBY")
+            self._handle_network_messages()
+            state = self.round_info.get("state", "LOBBY")
 
-        if state == "LOBBY":
-            self.renderer.draw_lobby(screen)
+            if state == "LOBBY":
+                self.renderer.draw_lobby(screen)
 
-        elif state == "PLAYING":
-            if time_since_input_send >= input_send_interval:
-                self.network.send(self._build_input_message())
-                time_since_input_send -= input_send_interval
-            self._prune_events()
-            self._update_camera()
-            self.renderer.draw(
-                screen,
-                self.camera,
-                self.game_state,
-                self.self_id,
-                facing_map=self.facing_map,
-                sanity_map=self.sanity_map,
-            )
+            elif state == "PLAYING":
+                if time_since_input_send >= input_send_interval:
+                    self.network.send(self._build_input_message())
+                    time_since_input_send -= input_send_interval
+                self._prune_events()
+                self._update_camera()
+                self.renderer.draw(
+                    screen,
+                    self.camera,
+                    self.game_state,
+                    self.self_id,
+                    facing_map=self.facing_map,
+                    sanity_map=self.sanity_map,
+                )
 
-        elif state == "GAME_OVER":
-            self.renderer.draw_game_over(screen, self.game_state)
+            elif state == "GAME_OVER":
+                self.renderer.draw_game_over(screen, self.game_state)
 
-        pygame.display.flip()
+            pygame.display.flip()
 
         self.network.close()
         pygame.quit()

@@ -20,7 +20,7 @@ import pygame
 from config import LOOT_PICKUP_RADIUS
 
 # NEW — lighting system
-from game.systems import quota
+
 from rendering.lighting import LightingSystem
 from rendering.sprite_loader import AnimationPlayer, load_frames
 
