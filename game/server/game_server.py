@@ -66,10 +66,11 @@ class GameServer:
         self.mimic            = Mimic()
         self.behavior_tracker = BehaviorTracker()
 
-        # NEW — monsters
-        self.siren  = Siren(x=900.0,  y=self.world.floor_y())
-        self.angel  = WeepingAngel(x=1100.0, y=self.world.floor_y())
-        self.hollow = Hollow(x=200.0, y=self.world.floor_y())
+        # NEW — monsters (positions from facility_map)
+        spawns = self.world.enemy_spawn_points
+        self.siren  = Siren(x=float(spawns["siren"][0]),  y=float(spawns["siren"][1]))
+        self.angel  = WeepingAngel(x=float(spawns["weeping_angel"][0]), y=float(spawns["weeping_angel"][1]))
+        self.hollow = Hollow(x=float(spawns["hollow"][0]), y=float(spawns["hollow"][1]))
 
         # NEW — systems
         self.sanity = SanitySystem()
@@ -454,6 +455,7 @@ class GameServer:
                         floor_y=self.world.floor_y(),
                         world_min_x=10,
                         world_max_x=self.world.world_width - 40,
+                        sanity_values=self.sanity.to_dict(),
                     )
 
                     self._update_loot_entities(target_dt)

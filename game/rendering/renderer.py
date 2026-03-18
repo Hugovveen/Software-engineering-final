@@ -70,6 +70,8 @@ class Renderer:
         self._scaled_loot_cache: dict[tuple[int, int, int], pygame.Surface] = {}
         self._screen_image_cache: dict[str, pygame.Surface] = {}
         self._char_preview_cache: dict[str, pygame.Surface] = {}
+        self._stairs_surface: pygame.Surface | None = None
+        self._scaled_stairs_cache: dict[tuple[int, int], pygame.Surface] = {}
 
     def _get_font(self, size: int = 14) -> pygame.font.Font:
         """Lazy-load a monospace font."""
@@ -145,6 +147,10 @@ class Renderer:
         angel_idle_still = enemy_root / "weeping_angel" / "idle.png"
         if not self._enemy_frames["angel"] and angel_idle_still.exists():
             self._enemy_frames["angel"] = [pygame.image.load(str(angel_idle_still)).convert_alpha()]
+
+        stairs_path = assets_root / "stairs" / "stairs.png"
+        if stairs_path.exists():
+            self._stairs_surface = pygame.image.load(str(stairs_path)).convert_alpha()
 
         self._player_frames = load_frames(player_walk_dir)
         self._skin_frames["researcher"] = self._player_frames
@@ -495,7 +501,15 @@ class Renderer:
 
         for x, y, w, h in map_data.get("ladders", []):
             sx, sy = camera.world_to_screen(x, y)
-            pygame.draw.rect(screen, self.LADDER_COLOR, pygame.Rect(sx, sy, w, h))
+            if self._stairs_surface is not None:
+                cache_key = (int(w), int(h))
+                if cache_key not in self._scaled_stairs_cache:
+                    self._scaled_stairs_cache[cache_key] = pygame.transform.scale(
+                        self._stairs_surface, cache_key
+                    )
+                screen.blit(self._scaled_stairs_cache[cache_key], (sx, sy))
+            else:
+                pygame.draw.rect(screen, self.LADDER_COLOR, pygame.Rect(sx, sy, w, h))
 
         # --- Players ---
         self_player: dict | None = None
@@ -630,7 +644,7 @@ class Renderer:
                     pygame.draw.circle(screen, (255, 255, 80),
                                        (int(siren_rect.centerx), int(siren_rect.y) - 8), 5)
 
-            elif mtype == "angel":
+            elif mtype == "weeping_angel":
                 sx, sy = camera.world_to_screen(m["x"], m["y"])
                 angel_rect = self._scaled_entity_rect(
                     sx,

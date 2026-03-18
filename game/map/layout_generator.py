@@ -4,6 +4,7 @@ Board format:
 - `-` means empty tile
 - `@` means solid platform tile
 - `$` means loot spawn tile
+- `|` means stair/ladder tile
 
 The parser validates board dimensions and converts contiguous `@` runs
 on each row into platform rectangles.
@@ -19,6 +20,7 @@ TILE_SIZE = 64
 EMPTY_TILE = "-"
 PLATFORM_TILE = "@"
 LOOT_TILE = "$"
+STAIR_TILE = "|"
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,7 @@ class LayoutBuildResult:
 
     board_rows: tuple[str, ...]
     platforms: list[tuple[int, int, int, int]]
+    stair_positions: list[tuple[int, int, int, int]]
     world_width: int
     world_height: int
     lowest_platform_row: int | None
@@ -47,12 +50,13 @@ def validate_board(
     empty_tile: str = EMPTY_TILE,
     platform_tile: str = PLATFORM_TILE,
     loot_tile: str = LOOT_TILE,
+    stair_tile: str = STAIR_TILE,
 ) -> None:
     """Validate board dimensions and characters."""
     if len(board_rows) != rows:
         raise ValueError(f"Board must have exactly {rows} rows, got {len(board_rows)}")
 
-    allowed = {empty_tile, platform_tile, loot_tile}
+    allowed = {empty_tile, platform_tile, loot_tile, stair_tile}
     for row_index, row in enumerate(board_rows):
         if len(row) != cols:
             raise ValueError(
@@ -115,6 +119,30 @@ def extract_loot_spawn_points(
     return spawn_points
 
 
+def extract_stair_positions(
+    board_rows: tuple[str, ...],
+    tile_size: int = TILE_SIZE,
+    stair_tile: str = STAIR_TILE,
+) -> list[tuple[int, int, int, int]]:
+    """Extract ladder rects from stair tiles.
+
+    Each | tile becomes a (x, y, w, h) ladder rect sized to one tile,
+    with a small upward extension so players standing on the platform
+    above can reach it.
+    """
+    positions: list[tuple[int, int, int, int]] = []
+    for row_index, row in enumerate(board_rows):
+        for col_index, cell in enumerate(row):
+            if cell != stair_tile:
+                continue
+            x = col_index * tile_size
+            y = row_index * tile_size - 4
+            w = tile_size
+            h = tile_size + 4
+            positions.append((x, y, w, h))
+    return positions
+
+
 def build_layout_from_board(
     board_text: str,
     cols: int = GRID_COLS,
@@ -123,6 +151,7 @@ def build_layout_from_board(
     empty_tile: str = EMPTY_TILE,
     platform_tile: str = PLATFORM_TILE,
     loot_tile: str = LOOT_TILE,
+    stair_tile: str = STAIR_TILE,
 ) -> LayoutBuildResult:
     """Build a complete layout result from a board string."""
     board_rows = normalize_board_rows(board_text)
@@ -133,12 +162,19 @@ def build_layout_from_board(
         empty_tile=empty_tile,
         platform_tile=platform_tile,
         loot_tile=loot_tile,
+        stair_tile=stair_tile,
     )
 
     platforms = compact_platform_runs(
         board_rows=board_rows,
         tile_size=tile_size,
         platform_tile=platform_tile,
+    )
+
+    stair_positions = extract_stair_positions(
+        board_rows=board_rows,
+        tile_size=tile_size,
+        stair_tile=stair_tile,
     )
 
     loot_spawn_points = extract_loot_spawn_points(
@@ -155,6 +191,7 @@ def build_layout_from_board(
     return LayoutBuildResult(
         board_rows=board_rows,
         platforms=platforms,
+        stair_positions=stair_positions,
         world_width=cols * tile_size,
         world_height=rows * tile_size,
         lowest_platform_row=lowest_row,

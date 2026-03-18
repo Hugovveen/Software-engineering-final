@@ -79,7 +79,7 @@ class FacilityMap:
         self.world_width = layout.world_width
         self.world_height = layout.world_height
         self.platforms = layout.platforms
-        self.ladders: list[tuple[int, int, int, int]] = []
+        self.ladders: list[tuple[int, int, int, int]] = list(layout.stair_positions)
 
         self.lowest_platform_row = layout.lowest_platform_row
 
@@ -99,8 +99,9 @@ class FacilityMap:
 
         self.enemy_spawn_points = {
             "mimic": (384, 912),
-            "siren": (832, 912),
-            "weeping_angel": (1248, 912),
+            "siren": (300, 390),
+            "weeping_angel": (1200, 912),
+            "hollow": (800, 912),
         }
 
     def floor_y(self) -> float:
