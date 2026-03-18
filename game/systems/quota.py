@@ -111,6 +111,19 @@ class QuotaSystem:
             total += self.collect_sample()
         return total
 
+    def add_value(self, amount: int) -> int:
+        """Add deterministic value directly to collected quota progress.
+
+        Args:
+            amount: Non-negative score/value to add.
+
+        Returns:
+            Updated collected total.
+        """
+        increment = max(0, int(amount))
+        self.collected += increment
+        return self.collected
+
     # ------------------------------------------------------------------
     # Query helpers
     # ------------------------------------------------------------------

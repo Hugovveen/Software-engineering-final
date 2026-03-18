@@ -12,10 +12,16 @@ CHANGES FROM HUGO'S VERSION (marked # NEW):
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import pygame
+
+from config import LOOT_PICKUP_RADIUS
 
 # NEW — lighting system
 from rendering.lighting import LightingSystem
+from rendering.sprite_loader import AnimationPlayer, load_frames
 
 
 class Renderer:
@@ -29,18 +35,385 @@ class Renderer:
     MIMIC_COLOR   = (220, 60,  90)
     SIREN_COLOR   = (160, 80,  200)
     ANGEL_COLOR   = (180, 175, 170)
+    LOOT_COLOR    = (255, 208, 80)
+    EXTRACTION_COLOR = (80, 220, 140)
     HUD_BG        = (10,  10,  20,  180)
+    ENTITY_RENDER_SCALE = 1.15
+    PLAYER_SPRITE_SCALE = 2.6
+    ENEMY_SPRITE_SCALE = PLAYER_SPRITE_SCALE
+    INTERACT_PROMPT_BG = (12, 14, 24, 205)
+    INTERACT_PROMPT_COLOR = (250, 246, 220)
 
     def __init__(self, screen_width: int, screen_height: int) -> None:
         # NEW — lighting system instance
         self.lighting = LightingSystem(screen_width, screen_height)
         self._font    = None   # lazy init after pygame.init()
+        self._assets_loaded = False
+        self._wall_surface: pygame.Surface | None = None
+        self._ground_floor_surface: pygame.Surface | None = None
+        self._basement_floor_surface: pygame.Surface | None = None
+        self._loot_surfaces: list[pygame.Surface] = []
+        self._player_frames: list[pygame.Surface] = []
+        self._player_animation: dict[str, AnimationPlayer] = {}
+        self._enemy_frames: dict[str, list[pygame.Surface]] = {}
+        self._enemy_animation: dict[str, AnimationPlayer] = {}
+        self._scaled_player_frame_cache: dict[tuple[int, int], list[pygame.Surface]] = {}
+        self._scaled_enemy_frame_cache: dict[tuple[str, int, int], list[pygame.Surface]] = {}
+        self._scaled_floor_cache: dict[tuple[str, int, int], pygame.Surface] = {}
+        self._scaled_loot_cache: dict[tuple[int, int, int], pygame.Surface] = {}
 
     def _get_font(self, size: int = 14) -> pygame.font.Font:
         """Lazy-load a monospace font."""
         if self._font is None:
             self._font = pygame.font.SysFont("monospace", size)
         return self._font
+
+    def _load_assets(self) -> None:
+        if self._assets_loaded:
+            return
+
+        assets_root = Path(__file__).resolve().parents[1] / "assets"
+        wall_dir = assets_root / "wall"
+        floor_dir = assets_root / "floor"
+        loot_dir = assets_root / "loot"
+        enemy_root = assets_root / "enemies"
+        player_walk_dir = assets_root / "player" / "walking"
+
+        if wall_dir.exists():
+            wall_images = sorted(
+                [
+                    p
+                    for p in wall_dir.iterdir()
+                    if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+                ]
+            )
+            if wall_images:
+                self._wall_surface = pygame.image.load(str(wall_images[0])).convert_alpha()
+
+        if floor_dir.exists():
+            floor_images = sorted(
+                [
+                    p
+                    for p in floor_dir.iterdir()
+                    if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+                ]
+            )
+
+            ground_candidate = floor_dir / "groundfloor.png"
+            basement_candidate = floor_dir / "basementfloor.png"
+
+            if ground_candidate.exists():
+                self._ground_floor_surface = pygame.image.load(str(ground_candidate)).convert_alpha()
+            elif floor_images:
+                self._ground_floor_surface = pygame.image.load(str(floor_images[0])).convert_alpha()
+
+            if basement_candidate.exists():
+                self._basement_floor_surface = pygame.image.load(str(basement_candidate)).convert_alpha()
+            elif len(floor_images) >= 2:
+                self._basement_floor_surface = pygame.image.load(str(floor_images[1])).convert_alpha()
+            elif self._ground_floor_surface is not None:
+                self._basement_floor_surface = self._ground_floor_surface
+
+        if loot_dir.exists():
+            loot_images = sorted(
+                [
+                    p
+                    for p in loot_dir.iterdir()
+                    if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
+                ]
+            )
+            self._loot_surfaces = [pygame.image.load(str(path)).convert_alpha() for path in loot_images]
+
+        self._enemy_frames["mimic"] = load_frames(enemy_root / "mimic" / "mimic_player" / "walking")
+        self._enemy_frames["siren_idle"] = load_frames(enemy_root / "siren" / "floating_anim")
+        self._enemy_frames["siren_cast"] = load_frames(enemy_root / "siren" / "casting_spell")
+        self._enemy_frames["angel"] = load_frames(enemy_root / "weeping_angel" / "weeping_show")
+
+        siren_idle_still = enemy_root / "siren" / "idle.png"
+        if not self._enemy_frames["siren_idle"] and siren_idle_still.exists():
+            self._enemy_frames["siren_idle"] = [pygame.image.load(str(siren_idle_still)).convert_alpha()]
+
+        angel_idle_still = enemy_root / "weeping_angel" / "idle.png"
+        if not self._enemy_frames["angel"] and angel_idle_still.exists():
+            self._enemy_frames["angel"] = [pygame.image.load(str(angel_idle_still)).convert_alpha()]
+
+        self._player_frames = load_frames(player_walk_dir)
+        self._assets_loaded = True
+
+    def _get_scaled_player_frames(self, target_w: int, target_h: int) -> list[pygame.Surface]:
+        cache_key = (target_w, target_h)
+        if cache_key in self._scaled_player_frame_cache:
+            return self._scaled_player_frame_cache[cache_key]
+
+        if not self._player_frames:
+            self._scaled_player_frame_cache[cache_key] = []
+            return []
+
+        scaled = [pygame.transform.scale(frame, (target_w, target_h)) for frame in self._player_frames]
+        self._scaled_player_frame_cache[cache_key] = scaled
+        return scaled
+
+    def _get_scaled_enemy_frames(self, sprite_key: str, target_w: int, target_h: int) -> list[pygame.Surface]:
+        cache_key = (sprite_key, target_w, target_h)
+        if cache_key in self._scaled_enemy_frame_cache:
+            return self._scaled_enemy_frame_cache[cache_key]
+
+        source_frames = self._enemy_frames.get(sprite_key, [])
+        if not source_frames:
+            self._scaled_enemy_frame_cache[cache_key] = []
+            return []
+
+        scaled = [pygame.transform.scale(frame, (target_w, target_h)) for frame in source_frames]
+        self._scaled_enemy_frame_cache[cache_key] = scaled
+        return scaled
+
+    def _draw_enemy_sprite(
+        self,
+        screen: pygame.Surface,
+        draw_rect: pygame.Rect,
+        entity_id: str,
+        sprite_key: str,
+        facing_right: bool = True,
+        fps: float = 10.0,
+    ) -> bool:
+        frames = self._get_scaled_enemy_frames(sprite_key, draw_rect.w, draw_rect.h)
+        if not frames:
+            return False
+
+        animation_key = f"{entity_id}:{sprite_key}"
+        animation = self._enemy_animation.get(animation_key)
+        if animation is None or animation.frames is not frames:
+            animation = AnimationPlayer(frames, fps=fps, loop=True)
+            self._enemy_animation[animation_key] = animation
+
+        animation.update(1.0 / 60.0)
+        frame = animation.current_frame()
+        if frame is None:
+            return False
+
+        if not facing_right:
+            frame = pygame.transform.flip(frame, True, False)
+
+        screen.blit(frame, draw_rect.topleft)
+        return True
+
+    def _draw_background(self, screen: pygame.Surface, camera) -> None:
+        if self._wall_surface is None:
+            return
+        sx, sy = camera.world_to_screen(0, 0)
+        screen.blit(self._wall_surface, (int(sx), int(sy)))
+
+    def _get_scaled_floor_surface(self, texture_kind: str, width: int, height: int) -> pygame.Surface | None:
+        source: pygame.Surface | None
+        if texture_kind == "basement":
+            source = self._basement_floor_surface
+        else:
+            source = self._ground_floor_surface
+
+        if source is None:
+            return None
+
+        cache_key = (texture_kind, width, height)
+        cached = self._scaled_floor_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        scaled = pygame.transform.scale(source, (width, height))
+        self._scaled_floor_cache[cache_key] = scaled
+        return scaled
+
+    def _draw_platforms(self, screen: pygame.Surface, camera, platforms: list) -> None:
+        if not platforms:
+            return
+
+        has_textures = self._ground_floor_surface is not None or self._basement_floor_surface is not None
+        if not has_textures:
+            for x, y, w, h in platforms:
+                sx, sy = camera.world_to_screen(x, y)
+                pygame.draw.rect(screen, self.PLATFORM_COLOR, pygame.Rect(sx, sy, w, h))
+            return
+
+        basement_row_y = max(float(y) for _x, y, _w, _h in platforms)
+
+        for x, y, w, h in platforms:
+            sx, sy = camera.world_to_screen(x, y)
+            tile_size = max(1, int(h))
+            texture_kind = "basement" if float(y) >= basement_row_y else "ground"
+
+            for offset_x in range(0, int(w), tile_size):
+                draw_w = min(tile_size, int(w) - offset_x)
+                texture = self._get_scaled_floor_surface(texture_kind, draw_w, int(h))
+                if texture is not None:
+                    screen.blit(texture, (int(sx) + offset_x, int(sy)))
+                else:
+                    pygame.draw.rect(
+                        screen,
+                        self.PLATFORM_COLOR,
+                        pygame.Rect(int(sx) + offset_x, int(sy), draw_w, int(h)),
+                    )
+
+    def _draw_player(self, screen: pygame.Surface, camera, player: dict, is_self: bool, facing_right: bool) -> None:
+        px = float(player.get("x", 0.0))
+        py = float(player.get("y", 0.0))
+        pw = int(player.get("w", 30))
+        ph = int(player.get("h", 48))
+        vx = float(player.get("vx", 0.0))
+        player_id = str(player.get("id", "player"))
+        sx, sy = camera.world_to_screen(px, py)
+
+        base_scale = self.PLAYER_SPRITE_SCALE * self.ENTITY_RENDER_SCALE
+        draw_w = max(1, int(pw * base_scale))
+        draw_h = max(1, int(ph * base_scale))
+        frames = self._get_scaled_player_frames(draw_w, draw_h)
+        frame: pygame.Surface | None = None
+
+        if frames:
+            anim = self._player_animation.get(player_id)
+            if anim is None or anim.frames is not frames:
+                anim = AnimationPlayer(frames, fps=10.0, loop=True)
+                self._player_animation[player_id] = anim
+
+            if abs(vx) > 0.01:
+                anim.update(1.0 / 60.0)
+            frame = anim.current_frame()
+
+        if frame is not None:
+            if not facing_right:
+                frame = pygame.transform.flip(frame, True, False)
+            draw_x = int(sx - (draw_w - pw) / 2)
+            draw_y = int(sy - (draw_h - ph))
+            screen.blit(frame, (draw_x, draw_y))
+        else:
+            color = self.SELF_COLOR if is_self else self.PLAYER_COLOR
+            draw_rect = self._scaled_entity_rect(sx, sy, pw, ph)
+            pygame.draw.rect(screen, color, draw_rect)
+
+    def _draw_extraction_zone(self, screen: pygame.Surface, camera, extraction_zone) -> None:
+        if extraction_zone is None:
+            return
+        if len(extraction_zone) != 4:
+            return
+        zone_x, zone_y, zone_w, zone_h = extraction_zone
+        sx, sy = camera.world_to_screen(zone_x, zone_y)
+        zone_rect = pygame.Rect(int(sx), int(sy), int(zone_w), int(zone_h))
+
+        fill = pygame.Surface((zone_rect.w, zone_rect.h), pygame.SRCALPHA)
+        fill.fill((*self.EXTRACTION_COLOR, 55))
+        screen.blit(fill, (zone_rect.x, zone_rect.y))
+        pygame.draw.rect(screen, self.EXTRACTION_COLOR, zone_rect, 2)
+
+    def _draw_loot(self, screen: pygame.Surface, camera, loot_items: list[dict]) -> None:
+        has_loot_assets = len(self._loot_surfaces) > 0
+        for loot in loot_items:
+            sx, sy = camera.world_to_screen(float(loot.get("x", 0.0)), float(loot.get("y", 0.0)))
+            loot_w = int(loot.get("w", 18))
+            loot_h = int(loot.get("h", 18))
+            loot_rect = pygame.Rect(int(sx), int(sy), loot_w, loot_h)
+
+            if has_loot_assets:
+                loot_id = str(loot.get("id", "loot"))
+                variant_index = self._loot_variant_index(loot_id)
+                scaled_sprite = self._get_scaled_loot_surface(variant_index, loot_w, loot_h)
+                if scaled_sprite is not None:
+                    screen.blit(scaled_sprite, loot_rect.topleft)
+                    continue
+
+            pygame.draw.rect(screen, self.LOOT_COLOR, loot_rect, border_radius=4)
+            pygame.draw.rect(screen, (80, 50, 20), loot_rect, 1, border_radius=4)
+
+    def _loot_variant_index(self, loot_id: str) -> int:
+        if not self._loot_surfaces:
+            return 0
+        checksum = sum(ord(character) for character in loot_id)
+        return checksum % len(self._loot_surfaces)
+
+    def _get_scaled_loot_surface(self, variant_index: int, width: int, height: int) -> pygame.Surface | None:
+        if not self._loot_surfaces:
+            return None
+
+        safe_index = max(0, min(variant_index, len(self._loot_surfaces) - 1))
+        cache_key = (safe_index, width, height)
+        cached = self._scaled_loot_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        source = self._loot_surfaces[safe_index]
+        scaled = pygame.transform.scale(source, (max(1, width), max(1, height)))
+        self._scaled_loot_cache[cache_key] = scaled
+        return scaled
+
+    def _player_center(self, player: dict) -> tuple[float, float]:
+        px = float(player.get("x", 0.0))
+        py = float(player.get("y", 0.0))
+        pw = float(player.get("w", 0.0))
+        ph = float(player.get("h", 0.0))
+        return px + pw * 0.5, py + ph * 0.5
+
+    def _is_in_extraction_zone(self, player: dict, extraction_zone) -> bool:
+        if extraction_zone is None or len(extraction_zone) != 4:
+            return False
+
+        zone_x, zone_y, zone_w, zone_h = (float(extraction_zone[0]), float(extraction_zone[1]), float(extraction_zone[2]), float(extraction_zone[3]))
+        player_left = float(player.get("x", 0.0))
+        player_top = float(player.get("y", 0.0))
+        player_w = float(player.get("w", 0.0))
+        player_h = float(player.get("h", 0.0))
+        player_right = player_left + player_w
+        player_bottom = player_top + player_h
+
+        zone_right = zone_x + zone_w
+        zone_bottom = zone_y + zone_h
+        return not (
+            player_right <= zone_x
+            or player_left >= zone_right
+            or player_bottom <= zone_y
+            or player_top >= zone_bottom
+        )
+
+    def _nearest_loot_distance(self, player: dict, loot_items: list[dict]) -> float | None:
+        if not loot_items:
+            return None
+        center_x, center_y = self._player_center(player)
+        nearest: float | None = None
+        for loot in loot_items:
+            lx = float(loot.get("x", 0.0))
+            ly = float(loot.get("y", 0.0))
+            distance = math.hypot(lx - center_x, ly - center_y)
+            if nearest is None or distance < nearest:
+                nearest = distance
+        return nearest
+
+    def _draw_interaction_prompt(self, screen: pygame.Surface, prompt_text: str | None) -> None:
+        if not prompt_text:
+            return
+
+        font = self._get_font(18)
+        text_surface = font.render(prompt_text, True, self.INTERACT_PROMPT_COLOR)
+        padding_x = 14
+        padding_y = 10
+        panel = pygame.Surface((text_surface.get_width() + padding_x * 2, text_surface.get_height() + padding_y * 2), pygame.SRCALPHA)
+        panel.fill(self.INTERACT_PROMPT_BG)
+
+        sw, sh = screen.get_size()
+        panel_x = (sw - panel.get_width()) // 2
+        panel_y = sh - panel.get_height() - 28
+        screen.blit(panel, (panel_x, panel_y))
+        screen.blit(text_surface, (panel_x + padding_x, panel_y + padding_y))
+
+    def _scaled_entity_rect(
+        self,
+        sx: float,
+        sy: float,
+        width: int,
+        height: int,
+        scale: float | None = None,
+    ) -> pygame.Rect:
+        effective_scale = float(scale) if scale is not None else self.ENTITY_RENDER_SCALE
+        draw_w = max(1, int(width * effective_scale))
+        draw_h = max(1, int(height * effective_scale))
+        draw_x = int(sx - (draw_w - width) / 2)
+        draw_y = int(sy - (draw_h - height))
+        return pygame.Rect(draw_x, draw_y, draw_w, draw_h)
 
     # ------------------------------------------------------------------
     # Main draw call
@@ -54,6 +427,7 @@ class Renderer:
         self_id: str | None,
         facing_map: dict | None = None,     # NEW
         sanity_map: dict | None = None,     # NEW
+        enable_lighting: bool = True,
     ) -> None:
         """Render world and entities from the latest game state snapshot.
 
@@ -67,6 +441,7 @@ class Renderer:
         """
         sanity_map  = sanity_map  or {}
         facing_map  = facing_map  or {}
+        self._load_assets()
         is_night    = game_state.get("quota", {}).get("is_night", False)
 
         # --- Sanity screen shake (NEW) ---
@@ -81,28 +456,54 @@ class Renderer:
 
         # --- World ---
         screen.fill(self.BG_COLOR)
+        self._draw_background(screen, camera)
 
         map_data = game_state.get("map", {})
-        for x, y, w, h in map_data.get("platforms", []):
-            sx, sy = camera.world_to_screen(x, y)
-            pygame.draw.rect(screen, self.PLATFORM_COLOR, pygame.Rect(sx, sy, w, h))
+        self._draw_platforms(screen, camera, map_data.get("platforms", []))
+        self._draw_extraction_zone(screen, camera, map_data.get("extraction_zone"))
+        self._draw_loot(screen, camera, list(game_state.get("loot", [])))
 
         for x, y, w, h in map_data.get("ladders", []):
             sx, sy = camera.world_to_screen(x, y)
             pygame.draw.rect(screen, self.LADDER_COLOR, pygame.Rect(sx, sy, w, h))
 
         # --- Players ---
+        self_player: dict | None = None
         for player in game_state.get("players", []):
-            sx, sy = camera.world_to_screen(player["x"], player["y"])
-            color  = self.SELF_COLOR if player.get("id") == self_id else self.PLAYER_COLOR
-            pygame.draw.rect(screen, color, pygame.Rect(sx, sy, player["w"], player["h"]))
+            player_id = str(player.get("id", ""))
+            facing_right = facing_map.get(player_id, True)
+            if player.get("id") == self_id:
+                self_player = player
+            self._draw_player(
+                screen=screen,
+                camera=camera,
+                player=player,
+                is_self=player.get("id") == self_id,
+                facing_right=bool(facing_right),
+            )
 
         # --- Mimic (Hugo's, unchanged) ---
         mimic = game_state.get("mimic")
         if mimic:
             sx, sy = camera.world_to_screen(mimic["x"], mimic["y"])
-            pygame.draw.rect(screen, self.MIMIC_COLOR,
-                             pygame.Rect(sx, sy, mimic["w"], mimic["h"]))
+            mimic_rect = self._scaled_entity_rect(
+                sx,
+                sy,
+                int(mimic["w"]),
+                int(mimic["h"]),
+                scale=self.ENEMY_SPRITE_SCALE,
+            )
+            mimic_facing_right = float(mimic.get("vx", 0.0)) >= 0.0
+            drew_mimic = self._draw_enemy_sprite(
+                screen=screen,
+                draw_rect=mimic_rect,
+                entity_id=str(mimic.get("id", "mimic")),
+                sprite_key="mimic",
+                facing_right=mimic_facing_right,
+                fps=8.0,
+            )
+            if not drew_mimic:
+                pygame.draw.rect(screen, self.MIMIC_COLOR, mimic_rect)
 
         # NEW — new monsters
         self._draw_monsters(screen, camera, game_state.get("monsters", []))
@@ -113,20 +514,35 @@ class Renderer:
                 self._draw_hollow_effects(screen, camera, monster.get("effects", []))
 
         # NEW — lighting overlay (applied after all entities)
-        self.lighting.apply(
-            screen        = screen,
-            camera        = camera,
-            players_data  = game_state.get("players", []),
-            facing_map    = facing_map,
-            campfires     = [],          # TODO: add campfire positions to game state
-            sanity_map    = sanity_map,
-            self_id       = self_id,
-            is_night      = is_night,
-        )
+        if enable_lighting:
+            self.lighting.apply(
+                screen        = screen,
+                camera        = camera,
+                players_data  = game_state.get("players", []),
+                facing_map    = facing_map,
+                campfires     = [],          # TODO: add campfire positions to game state
+                sanity_map    = sanity_map,
+                self_id       = self_id,
+                is_night      = is_night,
+            )
 
         # NEW — HUD
         quota_data = game_state.get("quota", {})
-        self._draw_hud(screen, self_id, my_sanity, quota_data)
+        carried_count = int(self_player.get("carried_loot_count", 0)) if self_player else 0
+        carried_value = int(self_player.get("carried_loot_value", 0)) if self_player else 0
+
+        interaction_prompt: str | None = None
+        if self_player is not None:
+            extraction_zone = map_data.get("extraction_zone")
+            if carried_value > 0 and self._is_in_extraction_zone(self_player, extraction_zone):
+                interaction_prompt = f"Press E to deposit loot ({carried_value} value)"
+            else:
+                nearest_loot_distance = self._nearest_loot_distance(self_player, list(game_state.get("loot", [])))
+                if nearest_loot_distance is not None and nearest_loot_distance <= float(LOOT_PICKUP_RADIUS):
+                    interaction_prompt = "Press E to pick up loot"
+
+        self._draw_hud(screen, self_id, my_sanity, quota_data, carried_count, carried_value)
+        self._draw_interaction_prompt(screen, interaction_prompt)
 
         # Restore camera offset after shake
         if effects.get("shake_x") and self_id:
@@ -156,27 +572,74 @@ class Renderer:
 
             if mtype == "siren":
                 sx, sy = camera.world_to_screen(m["x"], m["y"])
+                siren_rect = self._scaled_entity_rect(
+                    sx,
+                    sy,
+                    int(m["w"]),
+                    int(m["h"]),
+                    scale=self.ENEMY_SPRITE_SCALE,
+                )
+                siren_state = str(m.get("state", ""))
+                siren_sprite_key = "siren_cast" if siren_state == "casting" else "siren_idle"
+                siren_facing_right = float(m.get("vx", 0.0)) >= 0.0
+                drew_siren = self._draw_enemy_sprite(
+                    screen=screen,
+                    draw_rect=siren_rect,
+                    entity_id=str(m.get("id", "siren")),
+                    sprite_key=siren_sprite_key,
+                    facing_right=siren_facing_right,
+                    fps=9.0,
+                )
                 # Glow ring
-                glow = pygame.Surface((80, 80), pygame.SRCALPHA)
-                pygame.draw.circle(glow, (*self.SIREN_COLOR, 40), (40, 40), 40)
-                screen.blit(glow, (sx - 25, sy - 20))
-                pygame.draw.rect(screen, self.SIREN_COLOR,
-                                 pygame.Rect(sx, sy, m["w"], m["h"]))
+                glow_size = max(80, int(max(siren_rect.w, siren_rect.h) * 1.8))
+                glow = pygame.Surface((glow_size, glow_size), pygame.SRCALPHA)
+                glow_center = glow_size // 2
+                pygame.draw.circle(glow, (*self.SIREN_COLOR, 40), (glow_center, glow_center), glow_center)
+                screen.blit(glow, (siren_rect.centerx - glow_center, siren_rect.centery - glow_center))
+                if not drew_siren:
+                    pygame.draw.rect(screen, self.SIREN_COLOR, siren_rect)
                 if m.get("luring"):
                     pygame.draw.circle(screen, (255, 255, 80),
-                                       (int(sx + m["w"] / 2), int(sy) - 8), 5)
+                                       (int(siren_rect.centerx), int(siren_rect.y) - 8), 5)
 
             elif mtype == "angel":
                 sx, sy = camera.world_to_screen(m["x"], m["y"])
+                angel_rect = self._scaled_entity_rect(
+                    sx,
+                    sy,
+                    int(m["w"]),
+                    int(m["h"]),
+                    scale=self.ENEMY_SPRITE_SCALE,
+                )
+                angel_facing_right = float(m.get("vx", 0.0)) >= 0.0
+                drew_angel = self._draw_enemy_sprite(
+                    screen=screen,
+                    draw_rect=angel_rect,
+                    entity_id=str(m.get("id", "angel")),
+                    sprite_key="angel",
+                    facing_right=angel_facing_right,
+                    fps=7.0,
+                )
                 if m.get("frozen"):
                     # Crouched — covering face
-                    pygame.draw.rect(screen, self.ANGEL_COLOR,
-                                     pygame.Rect(sx + 4, sy + 10, 22, 26))
-                    pygame.draw.rect(screen, self.ANGEL_COLOR,
-                                     pygame.Rect(sx - 2, sy + 6, 34, 8))
-                else:
-                    pygame.draw.rect(screen, self.ANGEL_COLOR,
-                                     pygame.Rect(sx, sy, m["w"], m["h"]))
+                    arm_h = max(2, int(angel_rect.h * 0.16))
+                    if not drew_angel:
+                        pygame.draw.rect(screen, self.ANGEL_COLOR,
+                                         pygame.Rect(
+                                             angel_rect.x + int(angel_rect.w * 0.15),
+                                             angel_rect.y + int(angel_rect.h * 0.2),
+                                             max(2, int(angel_rect.w * 0.7)),
+                                             max(2, int(angel_rect.h * 0.6)),
+                                         ))
+                        pygame.draw.rect(screen, self.ANGEL_COLOR,
+                                         pygame.Rect(
+                                             angel_rect.x - int(angel_rect.w * 0.1),
+                                             angel_rect.y + int(angel_rect.h * 0.12),
+                                             max(2, int(angel_rect.w * 1.1)),
+                                             arm_h,
+                                         ))
+                elif not drew_angel:
+                    pygame.draw.rect(screen, self.ANGEL_COLOR, angel_rect)
 
             # Hollow: no sprite — handled by _draw_hollow_effects
 
@@ -227,6 +690,8 @@ class Renderer:
         self_id: str | None,
         sanity: float,
         quota_data: dict,
+        carried_count: int,
+        carried_value: int,
     ) -> None:
         """Draw heads-up display: sanity bar, quota progress, day/time.
 
@@ -244,6 +709,7 @@ class Renderer:
             f"HP:       {100}",          # placeholder until HP added
             f"SANITY:   {int(sanity)}%",
             f"SAMPLES:  {quota_data.get('collected', 0)}/{quota_data.get('quota', 200)}",
+            f"CARRY:    {carried_count} item(s), {carried_value} value",
             quota_data.get("time_string", ""),
         ]
         for i, line in enumerate(lines):

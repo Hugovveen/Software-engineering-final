@@ -26,7 +26,7 @@ class GameClient:
         self.port = port or SERVER_PORT
 
         self.network = ClientNetwork(self.host, self.port)
-        self.renderer = Renderer()
+        self.renderer = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.sound = SoundSystem()
         self.map = FacilityMap()
         self.camera = Camera(self.map.world_width)
@@ -35,6 +35,8 @@ class GameClient:
         self.game_state: dict = {"players": [], "mimic": {}, "map": {}}
         self.recent_events: list[dict] = []
         self.round_info: dict = {"state": "LOBBY", "number": 1, "time_remaining": 0.0}
+        self.facing_map: dict[str, bool] = {}
+        self.sanity_map: dict[str, float] = {}
 
     def _push_event(self, text: str, ttl: float = 3.0) -> None:
         self.recent_events.append(
@@ -67,6 +69,16 @@ class GameClient:
                 enemy_type = str(event.get("enemy_type", "enemy"))
                 target_id = event.get("target_id") or "?"
                 self._push_event(f"{enemy_type} attacking {target_id}", ttl=2.0)
+            elif event_type == "LOOT_PICKED":
+                self._push_event(
+                    f"{event.get('player_id', '?')} picked loot (+{int(event.get('value', 0))})",
+                    ttl=2.0,
+                )
+            elif event_type == "LOOT_DEPOSITED":
+                self._push_event(
+                    f"{event.get('player_id', '?')} deposited {int(event.get('value', 0))}",
+                    ttl=2.5,
+                )
 
     def _prune_events(self) -> None:
         now = time.perf_counter()
@@ -91,12 +103,22 @@ class GameClient:
             climb += 1
 
         on_ladder = keys[pygame.K_w] or keys[pygame.K_UP] or keys[pygame.K_s] or keys[pygame.K_DOWN]
+        jump = keys[pygame.K_SPACE]
+        sprint = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+
+        if self.self_id:
+            if move_x > 0:
+                self.facing_map[self.self_id] = True
+            elif move_x < 0:
+                self.facing_map[self.self_id] = False
 
         return {
             "type": "PLAYER_MOVE",
             "move_x": move_x,
             "climb": climb,
             "on_ladder": bool(on_ladder),
+            "jump": bool(jump),
+            "sprint": bool(sprint),
         }
 
     def _handle_network_messages(self) -> None:
@@ -112,6 +134,11 @@ class GameClient:
                 self.game_state = msg
                 self.round_info = dict(msg.get("round", self.round_info))
                 self._ingest_gameplay_events(list(msg.get("events", [])))
+                for player in self.game_state.get("players", []):
+                    player_id = str(player.get("id", ""))
+                    if player_id and player_id not in self.facing_map:
+                        self.facing_map[player_id] = True
+                    self.sanity_map[player_id] = float(player.get("sanity", 100.0))
 
     def _update_camera(self) -> None:
         if not self.self_id:
@@ -131,16 +158,23 @@ class GameClient:
         self.network.connect()
         self._send_join()
 
+        input_send_interval = 1.0 / 30.0
+        time_since_input_send = input_send_interval
+
         running = True
         while running:
-            dt = clock.tick(FPS) / 1000.0
+            dt = clock.tick_busy_loop(FPS) / 1000.0
+            time_since_input_send += dt
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_e:
+                    self.network.send({"type": "PLAYER_INTERACT"})
 
-            # Send input to server each frame for simple responsiveness.
-            self.network.send(self._build_input_message())
+            if time_since_input_send >= input_send_interval:
+                self.network.send(self._build_input_message())
+                time_since_input_send -= input_send_interval
             self._handle_network_messages()
             self._prune_events()
             self._update_camera()
@@ -149,8 +183,8 @@ class GameClient:
                 self.camera,
                 self.game_state,
                 self.self_id,
-                dt,
-                recent_events=self.recent_events,
+                facing_map=self.facing_map,
+                sanity_map=self.sanity_map,
             )
 
             if dt > 0:
