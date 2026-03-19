@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from config import (
+    PLAYER_SPEED,
     WEEPING_ANGEL_ATTACK_RANGE,
     WEEPING_ANGEL_CHASE_SPEED,
     WEEPING_ANGEL_OBSERVE_RANGE,
@@ -17,6 +18,9 @@ from entities.enemy_base import EnemyBase
 
 # Teleport cooldown in seconds — angel can teleport when fully off-screen
 _TELEPORT_COOLDOWN = 8.0
+_MIN_APPROACH_DISTANCE = 30.0  # stop this far from player
+_LUNGE_FREEZE_DURATION = 4.0   # freeze after touching a player
+_ANGEL_MAX_SPEED = PLAYER_SPEED * 0.4  # 40% of player walk speed
 
 
 @dataclass
@@ -39,6 +43,7 @@ class WeepingAngel(EnemyBase):
     target_id: str | None = None
     frozen: bool = False
     _teleport_timer: float = field(default=0.0, repr=False)
+    _lunge_freeze_timer: float = field(default=0.0, repr=False)
 
     def _distance_to_player(self, player: Any) -> float:
         dx = float(player.x) - self.x
@@ -96,6 +101,21 @@ class WeepingAngel(EnemyBase):
         if best_y is not None:
             self.y = best_y - self.height
 
+    def _snap_to_ground(self, world: Any) -> None:
+        """Place angel on the ground floor (lowest platform) only."""
+        platforms = getattr(world, "platforms", [])
+        if not platforms:
+            return
+        # Find the lowest platform row
+        ground_y = max(float(py) for _px, py, _pw, _ph in platforms)
+        my_cx = self.x + self.width * 0.5
+        for px, py, pw, ph in platforms:
+            if float(py) == ground_y and float(px) <= my_cx <= float(px + pw):
+                self.y = ground_y - self.height
+                return
+        # Fallback: snap to ground y anyway
+        self.y = ground_y - self.height
+
     def _find_platform_bounds(self, world: Any) -> tuple[float, float]:
         """Find edges of the platform the angel stands on."""
         platforms = getattr(world, "platforms", [])
@@ -144,9 +164,22 @@ class WeepingAngel(EnemyBase):
         self._teleport_timer = 0.0
         return True
 
+    def on_touched_player(self) -> None:
+        """Called by server when angel damages a player — triggers lunge freeze."""
+        self._lunge_freeze_timer = _LUNGE_FREEZE_DURATION
+
     def update(self, dt: float, world: Any, players: dict[str, Any]) -> None:
+        # Snap to whichever platform the angel is on (upper, middle, or ground)
         self._snap_to_platform(world)
         plat_left, plat_right = self._find_platform_bounds(world)
+
+        # Lunge cooldown — frozen after touching a player
+        if self._lunge_freeze_timer > 0:
+            self._lunge_freeze_timer -= dt
+            self.state = "frozen"
+            self.frozen = True
+            self.vx = 0.0
+            return
 
         if not players:
             self.state = "idle"
@@ -181,13 +214,16 @@ class WeepingAngel(EnemyBase):
             self.vx = 0.0
             return
 
-        if nearest_dist <= WEEPING_ANGEL_ATTACK_RANGE:
-            self.state = "attacking"
+        # Stop at minimum distance — don't corner players
+        if nearest_dist <= _MIN_APPROACH_DISTANCE:
+            self.state = "idle"
             self.vx = 0.0
             return
 
+        # Cap speed to player walk speed
+        chase_speed = min(WEEPING_ANGEL_CHASE_SPEED, _ANGEL_MAX_SPEED)
         direction = 1.0 if float(nearest_player.x) > self.x else -1.0
-        self.vx = direction * WEEPING_ANGEL_CHASE_SPEED
+        self.vx = direction * chase_speed
         self.x += self.vx * dt
         self.state = "chasing"
 

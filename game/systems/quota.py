@@ -42,10 +42,10 @@ class QuotaSystem:
         game_over:  True if quota was missed.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, target_quota: int | None = None) -> None:
         self.week      = 1
         self.day       = 1
-        self.quota     = BASE_QUOTA
+        self.quota     = target_quota if target_quota is not None else BASE_QUOTA
         self.collected = 0
         self.frame     = 0
         self.is_night  = False

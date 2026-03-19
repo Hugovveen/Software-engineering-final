@@ -4,11 +4,15 @@ Tracks per-player sanity independently of Hugo's Player dataclass
 (so we don't need to modify his file). Uses player_id as keys.
 
 Sanity drains when:
-  - Alone (no teammate within 180px)
-  - A monster is within 200px
+  - Alone (no teammate within 180px): 1/sec
+  - Siren within 250px: 8/sec
+  - Weeping Angel within 200px (and not frozen): 5/sec
+  - Hollow within 150px: 3/sec
+  - Mimic active anywhere: 2/sec
+  (drains from multiple sources stack)
 
 Sanity regens when:
-  - Near a teammate (within 180px)
+  - No monster within 400px safe zone: 1/sec
 
 Visual effects are requested via get_effects(player_id) and consumed
 by the renderer each frame.
@@ -32,8 +36,17 @@ except ImportError:
     SANITY_LOW_THRESHOLD  = 35.0
     SANITY_CRIT_THRESHOLD = 12.0
 
-MONSTER_DRAIN_RADIUS  = 200.0
-TEAMMATE_REGEN_RADIUS = 180.0
+MONSTER_DRAIN_RADIUS   = 400.0   # safe zone radius for regen
+TEAMMATE_REGEN_RADIUS  = 180.0
+_SIREN_DRAIN_RADIUS    = 300.0
+_SIREN_DRAIN_PER_SEC   = 15.0
+_ANGEL_DRAIN_RADIUS    = 200.0
+_ANGEL_DRAIN_PER_SEC   = 5.0
+_HOLLOW_DRAIN_RADIUS   = 150.0
+_HOLLOW_DRAIN_PER_SEC  = 3.0
+_DRAIN_MIMIC_PER_SEC   = 2.0
+_DRAIN_ALONE_PER_SEC   = 1.0
+_REGEN_PER_SEC         = 1.0
 
 
 class SanitySystem:
@@ -81,26 +94,59 @@ class SanitySystem:
     # Per-tick update (server)
     # ------------------------------------------------------------------
 
-    def update(self, players: dict, monsters: list) -> None:
+    def update(self, players: dict, monsters: list, dt: float = 1.0 / 15.0, mimics_active: bool = False) -> None:
         """Update all player sanity values for one server tick.
+
+        Drain rates are per-monster-type and stack when multiple monsters
+        are within their respective radii.  Recovery only happens when NO
+        monster is within the safe-zone radius (MONSTER_DRAIN_RADIUS).
 
         Args:
             players:  {player_id: Player} — Hugo's Player dataclass objects.
-            monsters: List of monster objects with x, y attributes.
+            monsters: List of monster objects with x, y and enemy_type attrs.
+            dt:       Delta time in seconds for this tick.
+            mimics_active: Whether mimics have spawned.
         """
         for pid, player in players.items():
             if pid not in self.values:
                 self.register(pid)
+            if not getattr(player, "alive", True):
+                continue
 
             near_teammate = self._has_teammate_nearby(pid, player, players)
-            near_monster  = self._has_monster_nearby(player, monsters)
 
-            if near_monster:
-                self._drain(pid, SANITY_DRAIN_MONSTER)
-            elif near_teammate:
-                self._regen(pid, SANITY_REGEN_GROUP)
-            else:
-                self._drain(pid, SANITY_DRAIN_ALONE)
+            drain = 0.0
+            any_monster_in_safe_zone = False
+
+            for m in monsters:
+                dist = math.hypot(m.x - player.x, m.y - player.y)
+
+                if dist <= MONSTER_DRAIN_RADIUS:
+                    any_monster_in_safe_zone = True
+
+                etype = getattr(m, "enemy_type", "") or type(m).__name__.lower()
+
+                if "siren" in etype and dist <= _SIREN_DRAIN_RADIUS:
+                    drain += _SIREN_DRAIN_PER_SEC * dt
+
+                elif "weeping" in etype or "angel" in etype:
+                    if dist <= _ANGEL_DRAIN_RADIUS and not getattr(m, "frozen", False):
+                        drain += _ANGEL_DRAIN_PER_SEC * dt
+
+                elif "hollow" in etype and dist <= _HOLLOW_DRAIN_RADIUS:
+                    drain += _HOLLOW_DRAIN_PER_SEC * dt
+
+            if mimics_active:
+                drain += _DRAIN_MIMIC_PER_SEC * dt
+
+            if not near_teammate:
+                drain += _DRAIN_ALONE_PER_SEC * dt
+
+            if drain > 0:
+                self._drain(pid, drain)
+            elif not any_monster_in_safe_zone:
+                # Regen only when no monster within safe-zone radius
+                self._regen(pid, _REGEN_PER_SEC * dt)
 
             # Tick hallucination cooldown
             if pid in self._hallucination_cd:
@@ -204,9 +250,3 @@ class SanitySystem:
                 return True
         return False
 
-    def _has_monster_nearby(self, player, monsters: list) -> bool:
-        """Check if any monster is within drain radius."""
-        for m in monsters:
-            if math.hypot(m.x - player.x, m.y - player.y) <= MONSTER_DRAIN_RADIUS:
-                return True
-        return False

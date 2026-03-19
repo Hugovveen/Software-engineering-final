@@ -17,6 +17,12 @@ from rendering.camera import Camera
 from rendering.renderer import Renderer
 from systems.sound_system import SoundSystem
 
+try:
+    from systems.audio_manager import AudioManager, MusicState
+    _HAS_AUDIO = True
+except Exception:
+    _HAS_AUDIO = False
+
 LOADING_DURATION = 3.0  # seconds minimum for loading screen
 
 
@@ -30,8 +36,22 @@ class GameClient:
         self.network = ClientNetwork(self.host, self.port)
         self.renderer = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.sound = SoundSystem()
+        self._audio: AudioManager | None = None
+        if _HAS_AUDIO:
+            try:
+                self._audio = AudioManager()
+                print("[AUDIO] AudioManager initialized successfully")
+            except Exception as e:
+                print(f"[AUDIO] AudioManager init failed: {e}")
+                self._audio = None
+        else:
+            print("[AUDIO] AudioManager module not available")
+        # Start title/lobby music immediately (lobby_ambient + end_of_story layered)
+        self._safe_audio("play_music", MusicState.LOBBY if _HAS_AUDIO else None)
+        self._audio_muted: bool = False
+        self._prev_alive: dict[str, bool] = {}
         self.map = FacilityMap()
-        self.camera = Camera(self.map.world_width)
+        self.camera = Camera(self.map.world_width, self.map.world_height)
 
         self.self_id: str | None = None
         self.game_state: dict = {"players": [], "mimic": {}, "map": {}}
@@ -45,10 +65,55 @@ class GameClient:
         self._loading_progress: float = 0.0
         self._connected: bool = False
 
+        # Lights-out blackout
+        self._lights_out_timer: float = 0.0
+        # Ending state
+        self._ending_fade_timer: float = 0.0
+        self._ending_player: dict = {}
+        self._ending_player_vx: float = 0.0
+        self._ending_player_x: float = 0.0
+        self._ending_player_facing: bool = True
+
+        # Fade transition state
+        self._fade_to_game: bool = False
+
         # Title screen state
         self._title_name: str = ""
         self._title_skin: str = "researcher"
+        self._title_difficulty: str = "RESEARCHER"
         self._cursor_timer: float = 0.0
+
+    def _play_test_beep(self) -> None:
+        """Generate and play a 440Hz sine wave test beep (0.3s)."""
+        import array
+        import math as _math
+        try:
+            sample_rate = 44100
+            duration = 0.3
+            n_samples = int(sample_rate * duration)
+            buf = array.array("h", [0] * n_samples)
+            for i in range(n_samples):
+                t = i / sample_rate
+                fade = min(1.0, min(t / 0.01, (duration - t) / 0.01))
+                buf[i] = int(16000 * fade * _math.sin(2 * _math.pi * 440 * t))
+            sound = pygame.mixer.Sound(buffer=buf)
+            sound.play()
+            print("[CLIENT] Test beep played successfully")
+        except Exception as e:
+            print(f"[CLIENT] Test beep failed: {e}")
+
+    def _safe_audio(self, method: str, *args, **kwargs):
+        """Call an AudioManager method, silently ignoring errors."""
+        if self._audio is None:
+            return None
+        fn = getattr(self._audio, method, None)
+        if fn is None:
+            return None
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            print(f"[AUDIO] {method}() failed: {e}")
+            return None
 
     def _push_event(self, text: str, ttl: float = 3.0) -> None:
         self.recent_events.append(
@@ -86,11 +151,14 @@ class GameClient:
                     f"{event.get('player_id', '?')} picked loot (+{int(event.get('value', 0))})",
                     ttl=2.0,
                 )
+                self._safe_audio("on_item_pickup")
             elif event_type == "LOOT_DEPOSITED":
                 self._push_event(
                     f"{event.get('player_id', '?')} deposited {int(event.get('value', 0))}",
                     ttl=2.5,
                 )
+            elif event_type == "LIGHTS_OUT":
+                self._lights_out_timer = 1.5
 
     def _prune_events(self) -> None:
         now = time.perf_counter()
@@ -101,6 +169,7 @@ class GameClient:
             "type": "PLAYER_JOIN",
             "name": self._title_name.strip() or "Player",
             "skin": self._title_skin,
+            "difficulty": self._title_difficulty,
         })
 
     def _build_input_message(self) -> dict:
@@ -159,14 +228,18 @@ class GameClient:
                     player_id = str(player.get("id", ""))
                     if player_id and player_id not in self.facing_map:
                         self.facing_map[player_id] = True
-                    self.sanity_map[player_id] = float(player.get("sanity", 100.0))
+
+                # Read sanity from top-level sanity dict (server-authoritative)
+                server_sanity = msg.get("sanity", {})
+                for pid, san_val in server_sanity.items():
+                    self.sanity_map[pid] = float(san_val)
 
     def _update_camera(self) -> None:
         if not self.self_id:
             return
         for player in self.game_state.get("players", []):
             if player.get("id") == self.self_id:
-                self.camera.follow(player.get("x", 0.0))
+                self.camera.follow(player.get("x", 0.0), player.get("y", 0.0))
                 break
 
     def _connect_to_server(self) -> None:
@@ -184,6 +257,19 @@ class GameClient:
         self.facing_map.clear()
         self.sanity_map.clear()
         self.recent_events.clear()
+        self._prev_alive.clear()
+        self.renderer._death_particles.clear()
+        self.renderer._death_finished.clear()
+        # Reset ending state
+        self._ending_fade_timer = 0.0
+        self._ending_player = {}
+        self._ending_player_vx = 0.0
+        self._ending_player_x = 0.0
+        self._ending_player_facing = True
+        self._lights_out_timer = 0.0
+        self._fade_to_game = False
+        if hasattr(self, '_ending_faded_in'):
+            del self._ending_faded_in
 
     def _draw_game_world(
         self,
@@ -213,6 +299,7 @@ class GameClient:
     def run(self) -> None:
         """Run the pygame window loop and client networking."""
         pygame.init()
+        print(f"[CLIENT] MIXER STATUS: {pygame.mixer.get_init()}")
         pygame.display.set_caption("GROVE")
         screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         clock = pygame.time.Clock()
@@ -243,6 +330,14 @@ class GameClient:
                             self._title_name = self._title_name[:-1]
                         elif event.key in (pygame.K_LEFT, pygame.K_RIGHT):
                             self._title_skin = "student" if self._title_skin == "researcher" else "researcher"
+                        elif event.key in (pygame.K_UP, pygame.K_DOWN):
+                            diffs = ["STUDENT", "RESEARCHER", "EXPERT"]
+                            idx = diffs.index(self._title_difficulty) if self._title_difficulty in diffs else 1
+                            if event.key == pygame.K_UP:
+                                idx = max(0, idx - 1)
+                            else:
+                                idx = min(len(diffs) - 1, idx + 1)
+                            self._title_difficulty = diffs[idx]
 
                     # --- LOBBY state input ---
                     elif self.client_state == "LOBBY":
@@ -250,18 +345,55 @@ class GameClient:
                             self.network.send({"type": "START_GAME"})
                         elif event.key == pygame.K_e:
                             self.network.send({"type": "PLAYER_INTERACT"})
+                        elif event.key == pygame.K_m:
+                            self._audio_muted = not self._audio_muted
+                            self._safe_audio("set_music_volume", 0.0 if self._audio_muted else 0.45)
 
                     # --- PLAYING state input ---
                     elif self.client_state == "PLAYING":
                         if event.key == pygame.K_e:
                             self.network.send({"type": "PLAYER_INTERACT"})
+                        elif event.key == pygame.K_m:
+                            self._audio_muted = not self._audio_muted
+                            self._safe_audio("set_music_volume", 0.0 if self._audio_muted else 0.45)
 
-                    # --- GAME_OVER state input ---
-                    elif self.client_state == "GAME_OVER":
+                    # --- QUOTA_MET state input ---
+                    elif self.client_state == "QUOTA_MET":
+                        if event.key == pygame.K_e:
+                            self.network.send({"type": "PLAYER_INTERACT"})
+
+                    # --- ENDING state input ---
+                    elif self.client_state == "ENDING":
                         if event.key == pygame.K_RETURN:
                             self._disconnect()
                             self._title_name = ""
                             self._title_skin = "researcher"
+                            self._title_difficulty = "RESEARCHER"
+                            self.renderer._ending_phase_timer = 0.0
+                            self.renderer._ending_stars.clear()
+                            self.renderer._quota_met = False
+                            # Restart title/lobby music (lobby_ambient + end_of_story)
+                            self._safe_audio("play_music", MusicState.SILENT if _HAS_AUDIO else None)
+                            self._safe_audio("play_music", MusicState.LOBBY if _HAS_AUDIO else None)
+                            # Reinitialize network for clean reconnection
+                            self.network = ClientNetwork(self.host, self.port)
+                            self.renderer.start_fade_in(1.5)
+                            self.client_state = "TITLE"
+
+                    # --- GAME_OVER state input ---
+                    elif self.client_state == "GAME_OVER":
+                        if event.key == pygame.K_RETURN and not self._safe_audio("is_game_over_playing"):
+                            self._disconnect()
+                            self._title_name = ""
+                            self._title_skin = "researcher"
+                            self._title_difficulty = "RESEARCHER"
+                            self.renderer._quota_met = False
+                            # Restart title/lobby music (lobby_ambient + end_of_story)
+                            self._safe_audio("play_music", MusicState.SILENT if _HAS_AUDIO else None)
+                            self._safe_audio("play_music", MusicState.LOBBY if _HAS_AUDIO else None)
+                            # Reinitialize network for clean reconnection
+                            self.network = ClientNetwork(self.host, self.port)
+                            self.renderer.start_fade_in(1.5)
                             self.client_state = "TITLE"
 
                 elif event.type == pygame.TEXTINPUT:
@@ -270,11 +402,15 @@ class GameClient:
                             self._title_name += event.text
 
                 elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if self.client_state == "LOBBY" and event.button == 1:
+                        btn_rect = getattr(self.renderer, '_test_sound_btn_rect', None)
+                        if btn_rect and btn_rect.collidepoint(event.pos):
+                            self._play_test_beep()
                     if self.client_state == "TITLE" and event.button == 1:
                         mx, my = event.pos
                         sw, sh = screen.get_size()
-                        # Match renderer layout: boxes at sh*0.15, spacing 180
-                        box_top = int(sh * 0.15)
+                        # Match renderer layout: boxes at sh*0.62, spacing 180
+                        box_top = int(sh * 0.62)
                         box_w, box_h = 120, 150
                         spacing = 180
                         r_cx = sw // 2 - spacing // 2  # researcher (left)
@@ -284,12 +420,17 @@ class GameClient:
                                 self._title_skin = "researcher"
                             elif s_cx - box_w // 2 <= mx <= s_cx + box_w // 2:
                                 self._title_skin = "student"
+                        # Difficulty button clicks
+                        diff_rects = getattr(self.renderer, '_difficulty_btn_rects', {})
+                        for dkey, drect in diff_rects.items():
+                            if drect.collidepoint(mx, my):
+                                self._title_difficulty = dkey
 
             # --- State rendering ---
 
             if self.client_state == "TITLE":
                 cursor_vis = int(self._cursor_timer * 2) % 2 == 0
-                self.renderer.draw_title_screen(screen, self._title_name, self._title_skin, cursor_vis)
+                self.renderer.draw_title_screen(screen, self._title_name, self._title_skin, cursor_vis, self._title_difficulty)
 
             elif self.client_state == "LOADING":
                 self._handle_network_messages()
@@ -297,30 +438,93 @@ class GameClient:
                 self.renderer.draw_loading_screen(screen, self._loading_progress)
                 if self._loading_progress >= 1.0:
                     self.client_state = "LOBBY"
+                    # LOBBY music already playing from title screen
+                    self.renderer.start_fade_in(1.5)
 
             elif self.client_state == "LOBBY":
                 self._handle_network_messages()
                 server_state = self.round_info.get("state", "LOBBY")
                 if server_state == "PLAYING":
                     self.client_state = "PLAYING"
+                    self.renderer.start_fade_out(0.5)
+                    self._safe_audio("play_music", MusicState.GAME if _HAS_AUDIO else None)
+                    self._fade_to_game = True  # trigger fade-in after fade-out
+                elif server_state == "QUOTA_MET":
+                    self.client_state = "QUOTA_MET"
+                elif server_state == "ENDING":
+                    self.client_state = "ENDING"
+                    self._ending_fade_timer = 1.5
+                    self.renderer._ending_phase_timer = 0.0
+                    self.renderer._ending_stars.clear()
+                    self.renderer.start_fade_out(1.5)
+                    self._safe_audio("play_music", MusicState.ENDING if _HAS_AUDIO else None)
                 elif server_state == "GAME_OVER":
                     self.client_state = "GAME_OVER"
-
-                # Send movement input — lobby is playable
-                if time_since_input_send >= input_send_interval:
-                    self._send_movement(dt)
-                    time_since_input_send -= input_send_interval
+                    self._game_over_lobby_started = False
+                    self.renderer.start_fade_out(1.0)
+                    self._safe_audio("on_game_over")
 
                 self._prune_events()
                 self.renderer.draw_lobby_background(screen)
-                self._draw_game_world(screen, skip_wall=True, enable_lighting=False)
-                self.renderer.draw_lobby_overlay(screen, self.game_state)
+                self.renderer.draw_lobby_overlay(screen, self.game_state, audio_muted=self._audio_muted)
 
             elif self.client_state == "PLAYING":
                 self._handle_network_messages()
                 server_state = self.round_info.get("state", "PLAYING")
-                if server_state == "GAME_OVER":
+                if server_state == "QUOTA_MET":
+                    self.client_state = "QUOTA_MET"
+                elif server_state == "ENDING":
+                    self.client_state = "ENDING"
+                    self._ending_fade_timer = 1.5
+                    self.renderer._ending_phase_timer = 0.0
+                    self.renderer._ending_stars.clear()
+                    for p in self.game_state.get("players", []):
+                        if p.get("id") == self.self_id:
+                            self._ending_player = dict(p)
+                            self._ending_player_x = float(screen.get_width()) / 2.0
+                            break
+                    self.renderer.start_fade_out(1.5)
+                    self._safe_audio("play_music", MusicState.ENDING if _HAS_AUDIO else None)
+                elif server_state == "GAME_OVER":
                     self.client_state = "GAME_OVER"
+                    self._game_over_lobby_started = False
+                    self.renderer.start_fade_out(1.0)
+                    self._safe_audio("on_game_over")
+
+                # Per-frame audio updates
+                self._safe_audio("update_frame", dt)
+
+                # Siren distance-based volume + scream pulse
+                siren_data = None
+                for mon in self.game_state.get("monsters", []):
+                    if mon.get("type") == "siren":
+                        siren_data = mon
+                        break
+                if siren_data and self.self_id:
+                    for p in self.game_state.get("players", []):
+                        if p.get("id") == self.self_id:
+                            sx, sy = float(siren_data.get("x", 0)), float(siren_data.get("y", 0))
+                            px, py = float(p.get("x", 0)), float(p.get("y", 0))
+                            siren_dist = ((sx - px) ** 2 + (sy - py) ** 2) ** 0.5
+                            # Scream pulse — volume spike when siren screams
+                            if siren_data.get("scream_active"):
+                                self._safe_audio("update_siren_distance", max(0, siren_dist - 200))
+                            else:
+                                self._safe_audio("update_siren_distance", siren_dist)
+                            break
+
+                # Sanity-driven audio each frame
+                if self.self_id and self.self_id in self.sanity_map:
+                    self._safe_audio("set_sanity", self.sanity_map[self.self_id] / 100.0)
+
+                # Detect player deaths
+                for player in self.game_state.get("players", []):
+                    pid = str(player.get("id", ""))
+                    alive_now = bool(player.get("alive", True))
+                    was_alive = self._prev_alive.get(pid, True)
+                    if was_alive and not alive_now:
+                        self._safe_audio("on_player_death")
+                    self._prev_alive[pid] = alive_now
 
                 if time_since_input_send >= input_send_interval:
                     self.network.send(self._build_input_message())
@@ -336,9 +540,106 @@ class GameClient:
                     sanity_map=self.sanity_map,
                 )
 
-            elif self.client_state == "GAME_OVER":
+                # Lights-out blackout overlay
+                if self._lights_out_timer > 0.0:
+                    self._lights_out_timer -= dt
+                    blackout = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+                    alpha = min(255, int(255 * (self._lights_out_timer / 1.5)))
+                    blackout.fill((0, 0, 0, alpha))
+                    screen.blit(blackout, (0, 0))
+
+            elif self.client_state == "QUOTA_MET":
                 self._handle_network_messages()
-                self.renderer.draw_game_over(screen, self.game_state)
+                server_state = self.round_info.get("state", "QUOTA_MET")
+                if server_state == "ENDING":
+                    self.client_state = "ENDING"
+                    self._ending_fade_timer = 1.5
+                    self.renderer._ending_phase_timer = 0.0
+                    self.renderer._ending_stars.clear()
+                    # Save player info for ending scene
+                    for p in self.game_state.get("players", []):
+                        if p.get("id") == self.self_id:
+                            self._ending_player = dict(p)
+                            self._ending_player_x = float(screen.get_width()) / 2.0
+                            break
+                    self.renderer.start_fade_out(1.5)
+                    self._safe_audio("play_music", MusicState.ENDING if _HAS_AUDIO else None)
+                elif server_state == "GAME_OVER":
+                    self.client_state = "GAME_OVER"
+                    self._game_over_lobby_started = False
+                    self.renderer.start_fade_out(1.0)
+                    self._safe_audio("on_game_over")
+
+                # Draw game world with escape ladder visible
+                self._update_camera()
+                if time_since_input_send >= input_send_interval:
+                    self.network.send(self._build_input_message())
+                    time_since_input_send -= input_send_interval
+                self.renderer.draw(
+                    screen,
+                    self.camera,
+                    self.game_state,
+                    self.self_id,
+                    facing_map=self.facing_map,
+                    sanity_map=self.sanity_map,
+                )
+
+            elif self.client_state == "ENDING":
+                self._safe_audio("update_frame", dt)
+                # Fade to black first, then show rooftop scene
+                if self._ending_fade_timer > 0:
+                    self._ending_fade_timer -= dt
+                    fade_alpha = min(255, int(255 * (1.0 - self._ending_fade_timer / 1.5)))
+                    screen.fill((0, 0, 0))
+                    fade_overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+                    fade_overlay.fill((0, 0, 0, fade_alpha))
+                    screen.blit(fade_overlay, (0, 0))
+                else:
+                    # Start fade-in on first frame of rooftop scene
+                    if self._ending_fade_timer == 0 and not hasattr(self, '_ending_faded_in'):
+                        self.renderer.start_fade_in(2.0)
+                        self._ending_faded_in = True
+                    # Playable rooftop scene
+                    sw_end, sh_end = screen.get_size()
+                    keys = pygame.key.get_pressed()
+                    move_x = 0
+                    if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+                        move_x -= 1
+                    if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+                        move_x += 1
+                    speed = 180.0
+                    self._ending_player_vx = move_x * speed
+                    self._ending_player_x += self._ending_player_vx * dt
+                    self._ending_player_x = max(0, min(sw_end - 34, self._ending_player_x))
+                    if move_x > 0:
+                        self._ending_player_facing = True
+                    elif move_x < 0:
+                        self._ending_player_facing = False
+
+                    platform_y = int(sh_end * 0.9) - 54
+                    ending_data = dict(self._ending_player)
+                    ending_data["x"] = self._ending_player_x
+                    ending_data["y"] = platform_y
+                    ending_data["vx"] = self._ending_player_vx
+                    ending_data["facing_right"] = self._ending_player_facing
+                    self.renderer.draw_ending_screen(screen, dt, player_data=ending_data)
+
+            elif self.client_state == "GAME_OVER":
+                self._safe_audio("update_frame", dt)
+                self._handle_network_messages()
+                vo_playing = self._safe_audio("is_game_over_playing")
+                if not vo_playing and not getattr(self, "_game_over_lobby_started", False):
+                    self._game_over_lobby_started = True
+                    self._safe_audio("play_music", MusicState.LOBBY if _HAS_AUDIO else None)
+                self.renderer.draw_game_over(screen, self.game_state, show_prompt=not vo_playing)
+
+            # Fade-to-game: once fade-out completes, start fade-in
+            if self._fade_to_game and self.renderer.is_black():
+                self._fade_to_game = False
+                self.renderer.start_fade_in(2.0)
+
+            # Draw fade overlay on top of everything
+            self.renderer.draw_fade_overlay(screen)
 
             pygame.display.flip()
 

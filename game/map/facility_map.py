@@ -99,10 +99,16 @@ class FacilityMap:
 
         self.enemy_spawn_points = {
             "mimic": (384, 912),
-            "siren": (300, 390),
-            "weeping_angel": (1200, 912),
-            "hollow": (800, 912),
+            "siren": (700, 390),         # middle platform (row 7, y=448)
+            "weeping_angel": (1100, 262), # upper platform right (row 5, y=320)
+            "hollow": (800, 902),         # ground floor roamer
         }
+
+        # Hidden escape ladder — revealed after quota met (col 12, rows 0-4)
+        self.escape_ladder = (12 * 64, 0, 32, 4 * 64)  # col 12, x=768, width=32, height=256
+
+        print(f"[LADDER] Positions: {self.ladders}")
+        print(f"[LADDER] Escape ladder: {self.escape_ladder}")
 
     def floor_y(self) -> float:
         """Return the player top-y for standing on the lowest solid board row."""

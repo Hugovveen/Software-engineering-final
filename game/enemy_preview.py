@@ -17,7 +17,7 @@ class EnemyPreview:
 
     def __init__(self) -> None:
         self.world = FacilityMap()
-        self.camera = Camera(self.world.world_width)
+        self.camera = Camera(self.world.world_width, self.world.world_height)
         self.renderer = Renderer(SCREEN_WIDTH, SCREEN_HEIGHT)
         self.player = Player(player_id="preview-player", name="Previewer")
         self.hud_font: pygame.font.Font | None = None
@@ -121,7 +121,7 @@ class EnemyPreview:
                     running = False
 
             self._update_player(dt)
-            self.camera.follow(self.player.x)
+            self.camera.follow(self.player.x, self.player.y)
             facing_map = {self.player.player_id: self.player.facing >= 0}
             sanity_map = {self.player.player_id: 100.0}
             self.renderer.draw(

@@ -167,6 +167,12 @@ def apply_player_input(
         player.facing = -1
 
     overlap_ladder = _overlaps_ladder(player, ladders)
+    if requested_ladder and not overlap_ladder:
+        import time as _time
+        now = _time.monotonic()
+        if not hasattr(apply_player_input, "_last_climb_debug") or now - apply_player_input._last_climb_debug >= 2.0:
+            apply_player_input._last_climb_debug = now
+            print(f"[CLIMB] Player y={player.y:.1f} x={player.x:.1f} w={player.width} h={player.height} — no ladder overlap. Ladders checked: {len(ladders)}")
     player.on_ladder = overlap_ladder and (requested_ladder or abs(climb) > 0.01)
 
     sprint_multiplier = _update_sprint_state(player, wants_sprint=wants_sprint, move_x=move_x, dt=dt)

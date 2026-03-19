@@ -17,7 +17,7 @@ class Player:
     player_id: str
     name: str = "Player"
     x: float = 64.0
-    y: float = 360.0
+    y: float = 848.0
     vx: float = 0.0
     vy: float = 0.0
     width: int = field(default=PLAYER_SIZE[0])
@@ -34,6 +34,14 @@ class Player:
     skin: str = "researcher"
     carried_loot_count: int = 0
     carried_loot_value: int = 0
+
+    def take_damage(self, amount: int) -> None:
+        """Apply damage. Sets alive=False when health reaches 0."""
+        if not self.alive:
+            return
+        self.health = max(0, self.health - amount)
+        if self.health <= 0:
+            self.alive = False
 
     def to_dict(self) -> dict:
         """Convert to a JSON-friendly dictionary for networking."""
