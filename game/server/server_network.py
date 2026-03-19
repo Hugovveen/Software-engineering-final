@@ -19,6 +19,8 @@ class ServerNetwork:
         self.port = port
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         self.sock.bind((host, port))
         self.sock.listen()
         self.sock.setblocking(False)
@@ -39,7 +41,7 @@ class ServerNetwork:
         try:
             data = conn.recv(8192)
             if not data:
-                return messages, buffer
+                raise ConnectionResetError("Client disconnected")
             buffer += data.decode("utf-8")
         except BlockingIOError:
             return messages, buffer
