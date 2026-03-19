@@ -1,196 +1,210 @@
-# GROVE
+```
+ ██████╗ ██████╗  ██████╗ ██╗   ██╗███████╗
+██╔════╝ ██╔══██╗██╔═══██╗██║   ██║██╔════╝
+██║  ███╗██████╔╝██║   ██║██║   ██║█████╗
+██║   ██║██╔══██╗██║   ██║╚██╗ ██╔╝██╔══╝
+╚██████╔╝██║  ██║╚██████╔╝ ╚████╔╝ ███████╗
+ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝   ╚═══╝  ╚══════╝
+```
 
-**A cooperative 2D horror survival game where you collect samples, meet quota, and escape before the lights go out.**
+> A cooperative 2D horror survival game — collect samples, meet quota, and escape before time runs out.
 
----
+## Overview
 
-## Premise
+You and a fellow researcher have been deployed to a derelict underground facility by a shadowy employer. Your mission: collect biological samples scattered throughout a multi-level complex and meet an escalating quota before time runs out. The facility is not empty — three distinct monsters stalk its corridors, each with unique behaviors that demand different survival strategies.
 
-You and a fellow researcher have been deployed to a derelict underground facility to collect biological samples for a shadowy employer. Each round you must gather enough loot to meet an escalating quota while navigating a multi-level facility crawling with monsters. Fail the quota, run out of time, or lose your sanity -- and it is game over for everyone.
+The game is a side-scrolling 2D experience with server-authoritative multiplayer. Players collect loot samples scattered across platforms throughout the facility and deposit them at the extraction zone. A central flashlight toggle mechanic forces tough decisions — turning your flashlight off hides you from the Siren but leaves you vulnerable to the Angel. Meanwhile, your sanity drains from monster proximity and isolation, warping your perception the longer you stay underground.
 
----
+Meet the quota and an escape ladder appears — climb to the rooftop and you win. But if the timer expires or all players die, the facility claims another crew.
 
-## How to Run
-
-**Requirements:** Python 3.13+, Pygame 2.6+
+## Quick Start
 
 ```bash
 # Install dependencies
-pip install pygame
+pip install pygame numpy
 
-# Start the server (terminal 1)
+# Run server (terminal 1)
 python main.py server
 
-# Start a client (terminal 2 -- repeat for a second player)
+# Run client (terminal 2)
 python main.py client
 
-# Optional: host/port overrides
-python main.py server --host 0.0.0.0 --port 7000
-python main.py client --host 192.168.1.5 --port 7000
+# Other modes
+python main.py preview   # enemy behavior preview, no networking
+python main.py editor    # level layout editor
 ```
-
-Additional modes:
-
-```bash
-python main.py preview   # Enemy behavior preview window
-python main.py editor    # Level layout editor
-```
-
----
 
 ## Controls
 
-| Action                             | Key(s)                        |
-|------------------------------------|-------------------------------|
-| Move left                          | `A` / Left Arrow              |
-| Move right                         | `D` / Right Arrow             |
-| Climb up                           | `W` / Up Arrow                |
-| Climb down                         | `S` / Down Arrow              |
-| Jump                               | `Space`                       |
-| Sprint                             | `Left Shift` / `Right Shift`  |
-| Interact (pick up / deposit loot)  | `E`                           |
-| Start game (lobby)                 | `Enter`                       |
-| Toggle music mute                  | `M`                           |
-| Type name (title screen)           | Keyboard input, `Enter` to confirm |
-| Select skin (title screen)         | Left / Right Arrow            |
-| Select difficulty (title screen)   | Up / Down Arrow               |
-
----
+| Key | Action |
+|-----|--------|
+| `A` / `D` or `←` / `→` | Move left / right |
+| `W` or `↑` | Climb ladder |
+| `SPACE` | Jump |
+| `SHIFT` | Sprint |
+| `E` | Pick up / deposit loot |
+| `F` | Toggle flashlight |
+| `M` | Mute / unmute audio |
+| `ESC` | Pause menu |
+| `ENTER` | Confirm / start game |
 
 ## Game Flow
 
-```
-TITLE  -->  LOBBY  -->  PLAYING  -->  QUOTA_MET  -->  ENDING
-                           |              |
-                           |              +--> (timer expires) --> GAME_OVER
-                           |
-                           +--> LIGHTS OUT (mimics spawn at 3:00 remaining)
-                           |
-                           +--> (timer expires / all dead) --> GAME_OVER
-```
+Title screen → character select (researcher / student) + difficulty → lobby (wait for players, Enter to start) → PLAYING (collect loot, survive) → LIGHTS OUT (mimics spawn at 3:00 remaining) → QUOTA MET (escape ladder appears at column 12) → ENDING (rooftop cutscene) or GAME OVER.
 
-1. **Title Screen** -- Enter your name, choose a skin (Researcher or Student), and pick a difficulty.
-2. **Lobby** -- Wait for both players to connect. The host presses Enter to start.
-3. **Playing** -- Explore the facility, pick up loot with `E`, and return it to the extraction zone (bottom-left) to deposit. A countdown timer is running.
-4. **Lights Out** -- At 3 minutes remaining, mimics spawn for each player. Monsters become harder to track.
-5. **Quota Met** -- Once deposited loot meets the target, a hidden escape ladder appears (column 12). Climb to the rooftop (y <= 32) to win.
-6. **Ending / Game Over** -- Press Enter to return to the title screen.
+## Characters
 
----
+- **Researcher**: Dark olive field jacket with equipment vest, sturdy boots. The experienced operative.
+- **Student**: Deep burgundy astronomy sweater, slim jeans. The eager newcomer.
+
+In solo mode, both skins are available. In multiplayer, each player gets a unique skin.
 
 ## Enemies
 
-### Weeping Angel
-- **Freezes** when any player faces it within 400 px.
-- When unobserved, **creeps toward the nearest player** at 65% of player walk speed.
-- Deals **5 damage** on touch (scaled by difficulty), then freezes for 4 seconds.
-- If off-screen for all players for 8+ seconds, **teleports behind** the nearest player.
-- Server enforces a 2-second global attack cooldown between angel hits.
-
 ### Siren
-- **Patrols** the middle platform, guarding the nearest cluster of loot spawn points.
-- When a player comes within 350 px it **chases** at 140 px/s; within 250 px it emits a **lure scream** every 4 seconds.
-- Deals **12 DPS** to players within 150 px (scaled by difficulty).
-- Has a pulse/cast mechanic on a 6-second cooldown (charm pull is currently disabled; damage and audio remain active).
-- Returns to its guard post if the player retreats beyond 500 px.
+- Patrols the middle platform, guarding loot clusters
+- Detects players by flashlight — turning flashlight OFF hides you from detection
+- Chases at 140 px/s within 350px, emits lure scream every 4s within 250px
+- Deals 22 DPS within 150px (scaled by difficulty)
+- Forces flashlight back ON if you linger nearby with it off for 4+ seconds (15s cooldown)
+- Gentle charm pull toward siren when sanity < 50 and within 200px
+
+### Weeping Angel
+- Freezes instantly when any player faces her (direction-based, not distance-limited)
+- Chases nearest player at 85% of player walk speed when unobserved
+- Deals 35 damage on proximity (70px) when not frozen, 3s cooldown
+- If player walks into her, she pushes back 2px/tick (repulsion, no magnet)
+- Teleports behind nearest player if off-screen for 8+ seconds
+- Brief 0.2s startup at 30% speed when unfreezing (no sudden jerk)
 
 ### Mimic
-- Spawns at **Lights Out** (3 minutes remaining) -- one mimic per player.
-- Copies the target player's **skin, name, and movement** with a 1.2-second delay, making it visually identical to a real player.
-- **Touches** its target for 20 damage (scaled by difficulty), then flees at sprint speed for 5 seconds.
-- **Flees** from non-target players within 300 px.
-- Periodically pauses idle for 2--3 seconds every 30--45 seconds to mimic natural player behavior.
-
----
+- Spawns at LIGHTS OUT (3 minutes remaining) — one per player
+- Copies target player's skin and name in multiplayer; uses opposite skin in solo
+- Steals loot items from the map (2s collection time, purely economic threat)
+- Flees from nearby players within 250px at sprint speed
+- Always has flashlight OFF (dark silhouette) — visual tell for observant players
+- Periodic idle taunts every 20-30 seconds
 
 ## Systems
 
 ### Sanity
-- Each player has 0--100 sanity tracked server-side.
-- **Drains** from multiple stacking sources:
-  - Alone (no teammate within 180 px): 1/sec
-  - Siren within 300 px: 15/sec
-  - Weeping Angel within 200 px (unfrozen): 5/sec
-  - Mimics active (global): 2/sec
-- **Regenerates** at 1/sec only when no monster is within 400 px.
-- **Low sanity** (below 35): screen shake and vignette darkening.
-- **Critical sanity** (below 12): chance of hallucinations (phantom player sprites).
+- 0–100 per player, tracked server-side
+- Drains from: isolation (no teammate within 180px), Siren proximity (300px), Angel proximity (200px, unfrozen), active mimics
+- Regenerates when no monster is within 400px
+- Low sanity (< 35): screen shake, vignette
+- Critical (< 12): hallucination chance
+- At zero: 2 HP/sec drain until death
 
-### Quota
-- A target loot value must be deposited at the extraction zone before time runs out.
-- Pick up loot scattered across the facility (`E`), carry it back to the extraction zone (bottom-left), and press `E` to deposit.
-- Quota target and loot values are set by difficulty (see table below).
+### Flashlight
+- Toggle with F key
+- ON: full flashlight cone illumination, Siren can detect you
+- OFF: tiny 12px ambient glow, hidden from Siren, vulnerable to other threats
+- Siren forces flashlight back on if you linger nearby too long (4s timer, 15s cooldown)
+- Mimics always have flashlight off
 
-### Timer
-- A countdown runs from the difficulty's starting time (240--420 seconds).
-- If it hits zero before quota is met, the round ends in Game Over.
+### Quota & Loot
+- Collect samples with E, carry to extraction zone (bottom-left), deposit with E
+- Quota target set by difficulty. When met, escape ladder appears
+- Loot respawns in batches when < 6 items remain (15s normal, 10s Expert)
+- Solo players can carry 5 items; multiplayer players carry 3
 
-### Loot Respawn
-- When all loot on the map is collected, a respawn timer starts.
-- Respawn delay: 15 seconds (10 seconds on Expert).
-- A fresh batch spawns at the same map positions with randomized values.
+### Health & Respawn
+- Starting HP: 75. Damage grants 2s invincibility
+- Multiplayer: 10s respawn timer at extraction zone
+- Solo: death = instant game over
 
-### Sprint
-- Sprint energy pool: 2.4 seconds at full charge.
-- Drains at 1.0/sec while sprinting; recharges at 0.8/sec while walking.
-- Speed multiplier while sprinting: 1.45x.
-- Cannot start sprinting unless energy is above 0.25.
+### Lighting
+- Near-opaque darkness overlay with flashlight cone cutouts
+- Sanity affects flashlight radius (shrinks as sanity drops)
+- Campfire radial light sources
+- Low-sanity vignette effect
 
-### Health and Respawn
-- Players have 100 HP. Taking any damage grants 2 seconds of invincibility.
-- On death, a 10-second respawn timer starts. The player revives at the extraction zone.
-- If all players are dead simultaneously with no pending respawns, the round ends.
-
----
+### Audio
+- Layered music system: lobby ambient, game tension, ending
+- Distance-based siren audio (louder when closer, spike during scream)
+- Heartbeat at low sanity, intensifies as sanity drops
+- Programmatic SFX generation for missing audio assets
 
 ## Difficulty
 
-| Setting        | Quota | Damage Multiplier | Timer (sec) | Loot Value Range |
-|----------------|------:|:-----------------:|:-----------:|:----------------:|
-| **STUDENT**    |   150 |       0.5x        |     420     |     12 -- 20     |
-| **RESEARCHER** |   300 |       1.0x        |     300     |     15 -- 25     |
-| **EXPERT**     |   500 |       2.0x        |     240     |     10 -- 18     |
+| Mode | Quota | Timer | Damage | Loot Range | Carry Limit |
+|------|------:|------:|-------:|-----------:|:-----------:|
+| **STUDENT** | 150 | 7 min | ×0.5 | 12–20 | 5 solo / 3 multi |
+| **RESEARCHER** | 300 | 5 min | ×1.0 | 15–25 | 5 solo / 3 multi |
+| **EXPERT** | 500 | 4 min | ×2.0 | 10–18 | 5 solo / 3 multi |
 
-The first player to connect sets the difficulty. Expert features faster loot respawn (10 sec vs 15 sec) but tighter loot values and a shorter timer.
-
----
+First player to connect sets the difficulty.
 
 ## Win / Lose Conditions
 
-**Win:**
-- Deposit enough loot to meet the quota, then climb the escape ladder to the rooftop before time runs out.
+**Win:** Deposit enough loot to meet quota → escape ladder appears at column 12 → climb to rooftop (y ≤ 150) → ending cutscene with playable rooftop walk.
 
-**Lose (any of the following):**
-- The countdown timer reaches zero before quota is met.
-- All players die with no respawns pending.
-- The quota system's weekly cycle ends with insufficient collection (week-end game over).
+**Lose (any):**
+- Timer reaches zero before quota met
+- All players die with no pending respawns (multiplayer)
+- Solo player dies (instant game over)
 
----
+## Project Structure
+
+```
+game/
+├── main.py                  # Entry point — server, client, preview, editor
+├── config.py                # All game constants in one place
+├── client/
+│   ├── client_network.py    # TCP client connection and message framing
+│   └── game_client.py       # Pygame loop, input, state machine
+├── server/
+│   ├── server_network.py    # TCP server socket and message framing
+│   └── game_server.py       # Authoritative game loop and state management
+├── entities/
+│   ├── enemy_base.py        # Abstract base class for enemies
+│   ├── enemy_registry.py    # Enemy type factory
+│   ├── loot.py              # Loot entity with gravity and platform collision
+│   ├── mimic.py             # Mimic enemy — loot thief
+│   ├── player.py            # Player data model
+│   ├── siren.py             # Siren enemy — patrol, chase, pulse
+│   └── weeping_angel.py     # Weeping Angel — freeze, chase, teleport
+├── map/
+│   ├── facility_map.py      # Tile-based level definition
+│   └── layout_generator.py  # Procedural layout tools
+├── rendering/
+│   ├── camera.py            # Viewport tracking
+│   ├── lighting.py          # Darkness overlay and flashlight cones
+│   ├── renderer.py          # Full-frame rendering pipeline
+│   └── sprite_loader.py     # Sprite sheet loading and animation
+├── systems/
+│   ├── audio_manager.py     # Music states, SFX, distance audio
+│   ├── behavior_tracker.py  # Player position history
+│   ├── movement_system.py   # Physics, ladders, platforms, sprint
+│   ├── quota.py             # Quota tracking and weekly cycles
+│   ├── sanity.py            # Per-player sanity drain and regen
+│   └── sound_system.py      # Simple sound effect player
+├── tests/
+│   ├── test_integration.py  # Server-side integration tests
+│   └── test_layout_generator.py
+└── assets/                  # Sprites, audio, textures
+```
 
 ## Tech Stack
 
-| Component    | Technology                          |
-|--------------|-------------------------------------|
-| Language     | Python 3.13                         |
-| Rendering    | Pygame 2.6                          |
-| Networking   | Raw TCP sockets (JSON framing)      |
-| Architecture | Authoritative server + thin client  |
-| Tick rate    | 15 Hz server, 60 FPS client         |
-| Resolution   | 1280 x 720                          |
-| Map          | 24x16 tile grid, 64 px/tile (1536 x 1024 world) |
-
----
+| Component | Technology |
+|-----------|-----------|
+| Language | Python 3.13 |
+| Rendering | Pygame 2.6 |
+| Audio | Pygame mixer + NumPy waveform generation |
+| Networking | Raw TCP sockets with JSON framing |
+| Architecture | Authoritative server (15 Hz) + thin client (60 FPS) |
+| Resolution | 1280×720 (1536×1024 world, 24×16 tiles at 64px) |
 
 ## Team
 
-- **Justus** -- monsters, rendering, audio, game systems
-- **Hugo** -- server architecture, networking, movement system
+- **Hugo** — backend architecture, networking, server game loop, entity systems, movement physics
+- **Justus** — frontend rendering pipeline, audio system, level design, UI/UX, enemy AI, game screens
 
----
+## Known Issues / Future Work
 
-## Known Issues
-
-- Siren charm-pull mechanic (forced player movement toward siren) is currently **disabled**; only proximity damage and audio lure are active.
-- Mimic loot-stealing logic returns an empty list every tick (steal behavior is stubbed out).
-- No `requirements.txt` file is present; the only external dependency is `pygame`.
-- The quota week/day cycle (`QUOTA_SCALE`, `DAYS_PER_WEEK`) exists in code but the primary game flow uses a single-round timer model. The weekly escalation path is not fully exercised in normal play.
+- Hollow enemy removed (stub kept for import compatibility)
+- Mimic loot-stealing could be more aggressive in higher difficulties
+- No `requirements.txt` — only external dependencies are `pygame` and `numpy`
+- Quota weekly escalation system exists in code but single-round model is primary
+- Siren charm pull is intentionally gentle (0.8 px/s) to avoid feeling unfair

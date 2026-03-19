@@ -6,7 +6,9 @@ rendering, and systems are separated into small modules.
 
 from __future__ import annotations
 
+import sys
 import time
+import traceback
 
 import pygame
 
@@ -139,7 +141,6 @@ class GameClient:
             try:
                 self._handle_single_event(event)
             except Exception as exc:
-                import traceback
                 traceback.print_exc()
                 print(f"[CLIENT] Event handling error: {exc}")
 
@@ -188,7 +189,6 @@ class GameClient:
                 self._push_event("LIGHTS OUT", ttl=3.0)
                 print("[CLIENT] LIGHTS_OUT event received — blackout overlay started")
             except Exception as exc:
-                import traceback
                 traceback.print_exc()
                 print(f"[CLIENT] LIGHTS_OUT handling error: {exc}")
 
@@ -422,7 +422,6 @@ class GameClient:
                                     if self._connected:
                                         self.network.close()
                                     pygame.quit()
-                                    import sys
                                     sys.exit()
                             elif event.key == pygame.K_l:
                                 self._paused = False

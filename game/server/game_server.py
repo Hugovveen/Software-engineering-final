@@ -17,11 +17,21 @@ import time
 import uuid
 
 from config import (
+    ANGEL_HIT_COOLDOWN,
+    ANGEL_HIT_DAMAGE,
+    ANGEL_HIT_RADIUS,
+    DAMAGE_INVINCIBILITY,
     LOOT_PICKUP_RADIUS,
     LOOT_SAMPLE_MAX_VALUE,
     LOOT_SAMPLE_MIN_VALUE,
+    MIMIC_HIT_DAMAGE,
+    MIMIC_SPAWN_THRESHOLD,
+    PLAYER_SPEED,
+    RESPAWN_DELAY,
     SERVER_HOST,
     SERVER_PORT,
+    SIREN_DAMAGE_RADIUS,
+    SIREN_DPS,
     TICK_RATE,
 )
 from entities.loot import Loot
@@ -37,16 +47,6 @@ from systems.quota import QuotaSystem
 from systems.sanity import SanitySystem
 
 
-# Damage constants (per-hit or per-second base values, before difficulty scaling)
-_SIREN_DPS = 22
-_SIREN_DAMAGE_RADIUS = 150.0
-_ANGEL_HIT_DAMAGE = 35
-_ANGEL_HIT_RADIUS = 70.0
-_ANGEL_HIT_COOLDOWN = 3.0
-_MIMIC_HIT_DAMAGE = 25
-_DAMAGE_INVINCIBILITY = 2.0
-_RESPAWN_DELAY = 10.0
-_MIMIC_SPAWN_THRESHOLD = 180.0
 _THROW_WINDOW_FRAMES = 30
 
 
@@ -492,8 +492,8 @@ class GameServer:
                             "reason": "solo_death",
                         })
                     else:
-                        print(f"[DEATH] {player.player_id} died. Solo=False — respawn in {_RESPAWN_DELAY}s")
-                        self._respawn_timers[player.player_id] = _RESPAWN_DELAY
+                        print(f"[DEATH] {player.player_id} died. Solo=False — respawn in {RESPAWN_DELAY}s")
+                        self._respawn_timers[player.player_id] = RESPAWN_DELAY
                 continue
             if self._invincibility_timers.get(player.player_id, 0.0) > 0:
                 continue
@@ -502,7 +502,7 @@ class GameServer:
             took_damage = self._apply_damage_to_player(player, px, py, dt)
 
             if took_damage:
-                self._invincibility_timers[player.player_id] = _DAMAGE_INVINCIBILITY
+                self._invincibility_timers[player.player_id] = DAMAGE_INVINCIBILITY
 
     def _tick_cooldowns(self, dt: float) -> None:
         for pid in list(self._invincibility_timers):
@@ -516,8 +516,8 @@ class GameServer:
         # Siren: DPS within radius (scaled by difficulty)
         sx = self.siren.x + self.siren.width * 0.5
         sy = self.siren.y + self.siren.height * 0.5
-        if math.hypot(px - sx, py - sy) < _SIREN_DAMAGE_RADIUS:
-            dmg = max(1, int(_SIREN_DPS * dt * self._dmg_mult))
+        if math.hypot(px - sx, py - sy) < SIREN_DAMAGE_RADIUS:
+            dmg = max(1, int(SIREN_DPS * dt * self._dmg_mult))
             player.take_damage(dmg)
             took_damage = True
 
@@ -530,10 +530,10 @@ class GameServer:
         if angel_dist < 200.0:
             print(f"[ANGEL] checking damage: dist={angel_dist:.1f}, frozen={self.angel.frozen}, cooldown={self._angel_hit_cooldown:.1f}")
 
-        if not self.angel.frozen and angel_dist < _ANGEL_HIT_RADIUS and self._angel_hit_cooldown <= 0:
-            dmg = max(1, int(_ANGEL_HIT_DAMAGE * self._dmg_mult))
+        if not self.angel.frozen and angel_dist < ANGEL_HIT_RADIUS and self._angel_hit_cooldown <= 0:
+            dmg = max(1, int(ANGEL_HIT_DAMAGE * self._dmg_mult))
             player.take_damage(dmg)
-            self._angel_hit_cooldown = _ANGEL_HIT_COOLDOWN
+            self._angel_hit_cooldown = ANGEL_HIT_COOLDOWN
             self.angel.attacking = True  # visual feedback for renderer
             print(f"[ANGEL] Hit {player.player_id} for {dmg} damage (dist={angel_dist:.1f})")
             took_damage = True
@@ -545,7 +545,6 @@ class GameServer:
         _PULL_RADIUS = 200.0
         _PULL_STRENGTH = 0.8
         _MAX_PULL_FRAC = 0.30  # never exceed 30% of walk speed
-        from config import PLAYER_SPEED
         max_pull_speed = PLAYER_SPEED * _MAX_PULL_FRAC
 
         sx = self.siren.x + self.siren.width * 0.5
@@ -581,14 +580,13 @@ class GameServer:
             candidates.append((float(px) + 10, float(py) - 48))
             candidates.append((float(px + pw) - 40, float(py) - 48))
         # Filter to those at least 400px from player
-        import math as _math
         far = [(cx, cy) for cx, cy in candidates
-               if _math.hypot(cx - player.x, cy - player.y) >= 400]
+               if math.hypot(cx - player.x, cy - player.y) >= 400]
         if far:
             return random.choice(far)
         # Fallback: pick the farthest candidate
         if candidates:
-            candidates.sort(key=lambda c: _math.hypot(c[0] - player.x, c[1] - player.y), reverse=True)
+            candidates.sort(key=lambda c: math.hypot(c[0] - player.x, c[1] - player.y), reverse=True)
             return candidates[0]
         # Ultimate fallback
         return (float(self.world.world_width) - 100, float(self.world.floor_y()) - 48)
@@ -729,7 +727,7 @@ class GameServer:
                     # Mimic spawn — triggers at 3 minutes remaining
                     if not self._mimics_active and int(self._game_timer) % 30 == 0 and int(self._game_timer) != int(self._game_timer + target_dt):
                         print(f"[MIMIC] Timer={self._game_timer:.1f}, threshold=180, active={self._mimics_active}")
-                    if not self._mimics_active and self._game_timer <= _MIMIC_SPAWN_THRESHOLD:
+                    if not self._mimics_active and self._game_timer <= MIMIC_SPAWN_THRESHOLD:
                         self._trigger_lights_out()
 
                     # Update active mimics
@@ -825,7 +823,7 @@ class GameServer:
                             player.take_damage(dmg)
                             print(f"[SANITY] {pid} at 0 sanity — taking {dmg:.2f} HP damage")
                             if not player.alive:
-                                self._invincibility_timers[pid] = _DAMAGE_INVINCIBILITY
+                                self._invincibility_timers[pid] = DAMAGE_INVINCIBILITY
 
                     self.quota.tick()
                     self._game_timer -= target_dt

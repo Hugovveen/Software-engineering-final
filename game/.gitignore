@@ -1,2 +1,8 @@
-__pycache__
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+**/.DS_Store
+*.wav
 image.png

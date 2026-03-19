@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import math
-import random
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from config import (
+    ANGEL_MAX_SPEED_FRACTION,
+    ANGEL_REPULSION_DISTANCE,
+    ANGEL_REPULSION_PX,
+    ANGEL_STARTUP_DURATION,
+    ANGEL_STARTUP_SPEED_FACTOR,
+    ANGEL_STOP_DISTANCE,
+    ANGEL_TELEPORT_COOLDOWN,
     PLAYER_SPEED,
     WEEPING_ANGEL_ATTACK_RANGE,
     WEEPING_ANGEL_CHASE_SPEED,
@@ -16,16 +21,7 @@ from config import (
 )
 from entities.enemy_base import EnemyBase
 
-# Teleport cooldown in seconds — angel can teleport when fully off-screen
-_TELEPORT_COOLDOWN = 8.0
-_ANGEL_MAX_SPEED = PLAYER_SPEED * 0.85  # 85% of player walk speed
-
-# Movement thresholds
-_STOP_DISTANCE = 50.0          # stop moving when this close to player
-_REPULSION_DISTANCE = 40.0     # push angel away when player is this close
-_REPULSION_PX = 2.0            # pixels to push per tick
-_STARTUP_DURATION = 0.2        # seconds of slow startup after unfreeze
-_STARTUP_SPEED_FACTOR = 0.3    # 30% speed during startup
+_ANGEL_MAX_SPEED = PLAYER_SPEED * ANGEL_MAX_SPEED_FRACTION
 
 
 @dataclass
@@ -152,7 +148,7 @@ class WeepingAngel(EnemyBase):
 
     def _try_teleport(self, players: dict[str, Any], world: Any) -> bool:
         """Teleport behind the nearest player if off-screen long enough."""
-        if self._teleport_timer < _TELEPORT_COOLDOWN:
+        if self._teleport_timer < ANGEL_TELEPORT_COOLDOWN:
             return False
 
         _, nearest_player, _ = self._get_nearest_player(players)
@@ -219,7 +215,7 @@ class WeepingAngel(EnemyBase):
         was_frozen = self.frozen
         self.frozen = False
         if was_frozen:
-            self._startup_timer = _STARTUP_DURATION
+            self._startup_timer = ANGEL_STARTUP_DURATION
 
         if nearest_player is None:
             self.state = "idle"
@@ -234,16 +230,16 @@ class WeepingAngel(EnemyBase):
         angel_cx = self.x + self.width * 0.5
         player_cx = float(nearest_player.x) + float(getattr(nearest_player, 'width', 30)) * 0.5
         dx_centers = abs(angel_cx - player_cx)
-        if dx_centers < _REPULSION_DISTANCE:
+        if dx_centers < ANGEL_REPULSION_DISTANCE:
             push_dir = 1.0 if angel_cx >= player_cx else -1.0
-            self.x += push_dir * _REPULSION_PX
+            self.x += push_dir * ANGEL_REPULSION_PX
             self.x = max(plat_left, min(plat_right, self.x))
             self.vx = 0.0
             self.state = "chasing"
             return
 
         # --- Within stop distance: hold position, don't nudge ---
-        if nearest_dist <= _STOP_DISTANCE:
+        if nearest_dist <= ANGEL_STOP_DISTANCE:
             self.vx = 0.0
             self.state = "chasing"
             return
@@ -252,7 +248,7 @@ class WeepingAngel(EnemyBase):
         direction = 1.0 if player_cx > angel_cx else -1.0
         chase_speed = min(WEEPING_ANGEL_CHASE_SPEED, _ANGEL_MAX_SPEED)
         if self._startup_timer > 0:
-            chase_speed *= _STARTUP_SPEED_FACTOR
+            chase_speed *= ANGEL_STARTUP_SPEED_FACTOR
         self.vx = direction * chase_speed
         self.x += self.vx * dt
         self.state = "chasing"
