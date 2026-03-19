@@ -22,15 +22,24 @@ from config import (
 )
 from entities.enemy_base import EnemyBase
 
+# Loot guard behaviour constants
+_GUARD_RADIUS = 200.0    # patrol radius around assigned loot cluster
+_CHASE_RANGE  = 350.0    # start chasing players within this range
+_RETURN_RANGE = 500.0    # stop chasing and return if player goes beyond this
+_LURE_RANGE   = 400.0    # face player when within this range
+_SCREAM_RANGE = 250.0    # trigger scream pulse within this range
+_SCREAM_DURATION = 0.5   # seconds scream stays active
+_SCREAM_INTERVAL = 4.0   # seconds between screams
+
 
 @dataclass
 class Siren(EnemyBase):
-    """Patrols until a player enters aggro range, then chases and pulses."""
+    """Patrols a platform, lures nearby players, chases and pulses."""
 
     enemy_id: str = "siren-1"
     enemy_type: str = "siren"
-    x: float = 1200.0
-    y: float = 360.0
+    x: float = 300.0
+    y: float = 600.0
     vx: float = -90.0
     vy: float = 0.0
     width: int = field(default=SIREN_SIZE[0])
@@ -40,6 +49,20 @@ class Siren(EnemyBase):
     pulse_cooldown_remaining: float = field(default=SIREN_INITIAL_CAST_DELAY)
     cast_time_remaining: float = 0.0
     charmed_targets: dict[str, dict[str, float | int]] = field(default_factory=dict)
+    luring: bool = False
+    scream_active: bool = False  # True for 0.5s during a lure scream pulse
+    _scream_cooldown: float = field(default=4.0, repr=False)
+    _scream_timer: float = field(default=0.0, repr=False)  # time remaining in active scream
+
+    # Platform bounds for patrol (set during update)
+    _patrol_left: float = field(default=0.0, repr=False)
+    _patrol_right: float = field(default=1500.0, repr=False)
+
+    # Loot guard — assigned center of the nearest loot cluster
+    _guard_center_x: float = field(default=-1.0, repr=False)
+    _guard_center_y: float = field(default=-1.0, repr=False)
+    _guard_initialized: bool = field(default=False, repr=False)
+    _flashlight_visibility: dict = field(default_factory=dict, repr=False)
 
     def _distance_to_player(self, player: Any) -> float:
         dx = float(player.x) - self.x
@@ -53,6 +76,22 @@ class Siren(EnemyBase):
 
         for player_id in sorted(players.keys()):
             player = players[player_id]
+            if not getattr(player, "alive", True):
+                continue
+            # Siren cannot detect players with flashlight off
+            flashlight_on = getattr(player, "flashlight_on", True)
+            if not flashlight_on:
+                # Log detection state change
+                prev = self._flashlight_visibility.get(player_id, True)
+                if prev:
+                    print(f"[SIREN] Player {player_id} flashlight={'OFF'} — hidden")
+                    self._flashlight_visibility[player_id] = False
+                continue
+            else:
+                prev = self._flashlight_visibility.get(player_id, True)
+                if not prev:
+                    print(f"[SIREN] Player {player_id} flashlight={'ON'} — detected")
+                    self._flashlight_visibility[player_id] = True
             dist = self._distance_to_player(player)
             if dist < nearest_dist:
                 nearest_dist = dist
@@ -61,19 +100,77 @@ class Siren(EnemyBase):
 
         return nearest_id, nearest_player, nearest_dist
 
-    def _update_patrol(self, dt: float, world: Any) -> None:
-        world_min_x = 0.0
-        world_max_x = max(world_min_x, float(getattr(world, "world_width", 1600)) - float(self.width))
+    def _find_platform_bounds(self, world: Any) -> tuple[float, float]:
+        """Find the left/right edges of the platform the siren is standing on."""
+        platforms = getattr(world, "platforms", [])
+        my_bottom = self.y + self.height
+        my_cx = self.x + self.width * 0.5
+
+        for px, py, pw, ph in platforms:
+            plat_top = float(py)
+            if abs(my_bottom - plat_top) > 8:
+                continue
+            if float(px) <= my_cx <= float(px + pw):
+                return float(px), float(px + pw - self.width)
+
+        # Fallback: world bounds
+        return 0.0, float(getattr(world, "world_width", 1536) - self.width)
+
+    def _snap_to_platform(self, world: Any) -> None:
+        """Place siren on top of the nearest platform beneath it."""
+        platforms = getattr(world, "platforms", [])
+        my_cx = self.x + self.width * 0.5
+        best_y: float | None = None
+
+        for px, py, pw, ph in platforms:
+            plat_top = float(py)
+            if plat_top < self.y - 16:
+                continue
+            if float(px) <= my_cx <= float(px + pw):
+                if best_y is None or plat_top < best_y:
+                    best_y = plat_top
+
+        if best_y is not None:
+            self.y = best_y - self.height
+
+    def _assign_guard_post(self, world: Any) -> None:
+        """Pick the center of the 3 nearest loot spawn points as guard post."""
+        loot_points = getattr(world, "loot_spawn_points", [])
+        if not loot_points:
+            self._guard_center_x = self.x
+            self._guard_center_y = self.y
+            self._guard_initialized = True
+            return
+        # Sort by distance to siren spawn
+        dists = []
+        for lx, ly in loot_points:
+            d = math.hypot(float(lx) - self.x, float(ly) - self.y)
+            dists.append((d, float(lx), float(ly)))
+        dists.sort()
+        nearest = dists[:3]
+        self._guard_center_x = sum(x for _, x, _ in nearest) / len(nearest)
+        self._guard_center_y = sum(y for _, _, y in nearest) / len(nearest)
+        self._guard_initialized = True
+
+    def _update_patrol(self, dt: float) -> None:
+        """Patrol around the guard center within _GUARD_RADIUS."""
+        if self._guard_center_x >= 0:
+            # Patrol back and forth around guard center
+            guard_left = max(self._patrol_left, self._guard_center_x - _GUARD_RADIUS)
+            guard_right = min(self._patrol_right, self._guard_center_x + _GUARD_RADIUS)
+        else:
+            guard_left = self._patrol_left
+            guard_right = self._patrol_right
 
         if self.vx == 0.0:
             self.vx = SIREN_PATROL_SPEED
 
         self.x += self.vx * dt
-        if self.x <= world_min_x:
-            self.x = world_min_x
+        if self.x <= guard_left:
+            self.x = guard_left
             self.vx = abs(SIREN_PATROL_SPEED)
-        elif self.x >= world_max_x:
-            self.x = world_max_x
+        elif self.x >= guard_right:
+            self.x = guard_right
             self.vx = -abs(SIREN_PATROL_SPEED)
 
     def _get_charm_level(self, distance: float) -> int:
@@ -144,38 +241,83 @@ class Siren(EnemyBase):
         for player_id in expired_targets:
             self.charmed_targets.pop(player_id, None)
 
-    def update(self, dt: float, world: Any, players: dict[str, Any]) -> None:
-        floor_y = float(world.floor_y()) if hasattr(world, "floor_y") else self.y
-        self.y = floor_y
+    def _distance_to_guard_center(self) -> float:
+        """Distance from current position to guard center."""
+        if self._guard_center_x < 0:
+            return 0.0
+        return math.hypot(self.x - self._guard_center_x, self.y - self._guard_center_y)
 
-        self.pulse_cooldown_remaining = max(0.0, self.pulse_cooldown_remaining - dt)
-        self._apply_charm_effects(dt, world, players)
+    def _clamp_to_home_platform(self, world: Any) -> None:
+        """Keep siren on the middle platform — never fall to ground floor."""
+        platforms = getattr(world, "platforms", [])
+        my_cx = self.x + self.width * 0.5
+        # Find the platform closest to siren's spawn y (~390 + height = ~448)
+        target_y = self.y + self.height
+        best: tuple[float, float, float] | None = None
+        for px, py, pw, ph in platforms:
+            plat_top = float(py)
+            if float(px) <= my_cx <= float(px + pw):
+                if best is None or abs(plat_top - target_y) < abs(best[0] - target_y):
+                    best = (plat_top, float(px), float(px + pw - self.width))
+        if best is not None:
+            self.y = best[0] - self.height
+
+    def update(self, dt: float, world: Any, players: dict[str, Any]) -> None:
+        """Advance siren AI by one tick."""
+        self._clamp_to_home_platform(world)
+        self._patrol_left, self._patrol_right = self._find_platform_bounds(world)
+        if not self._guard_initialized:
+            self._assign_guard_post(world)
+
+        self._tick_timers(dt)
 
         if self.cast_time_remaining > 0.0:
-            self.cast_time_remaining = max(0.0, self.cast_time_remaining - dt)
-            self.state = "casting"
-            self.vx = 0.0
-            if self.cast_time_remaining <= 0.0:
-                self._apply_charm_pulse(players)
-                self.state = "cooldown"
-                self.pulse_cooldown_remaining = SIREN_PULSE_COOLDOWN
+            self._continue_casting(dt)
             return
 
         if not players:
             self.target_id = None
             self.state = "patrol"
-            self._update_patrol(dt, world)
+            self._update_patrol(dt)
             return
 
         nearest_id, nearest_player, nearest_dist = self._get_nearest_player(players)
-
         if nearest_player is None:
             self.target_id = None
             self.state = "patrol"
-            self._update_patrol(dt, world)
+            self._update_patrol(dt)
             return
 
         self.target_id = nearest_id
+        self._respond_to_player(dt, nearest_player, nearest_dist)
+        self.x = max(self._patrol_left, min(self._patrol_right, self.x))
+
+    def _tick_timers(self, dt: float) -> None:
+        self.pulse_cooldown_remaining = max(0.0, self.pulse_cooldown_remaining - dt)
+        self.luring = False
+        self.scream_active = False
+        if self._scream_timer > 0:
+            self._scream_timer -= dt
+            self.scream_active = self._scream_timer > 0
+        self._scream_cooldown = max(0.0, self._scream_cooldown - dt)
+
+    def _continue_casting(self, dt: float) -> None:
+        self.cast_time_remaining = max(0.0, self.cast_time_remaining - dt)
+        self.state = "casting"
+        self.vx = 0.0
+        if self.cast_time_remaining <= 0.0:
+            self.state = "cooldown"
+            self.pulse_cooldown_remaining = SIREN_PULSE_COOLDOWN
+
+    def _respond_to_player(self, dt: float, nearest_player: Any, nearest_dist: float) -> None:
+        if nearest_dist <= _LURE_RANGE:
+            self.luring = True
+            direction = 1.0 if float(nearest_player.x) > self.x else -1.0
+            self.vx = direction * 0.01
+            if nearest_dist <= _SCREAM_RANGE and self._scream_cooldown <= 0:
+                self.scream_active = True
+                self._scream_timer = _SCREAM_DURATION
+                self._scream_cooldown = _SCREAM_INTERVAL
 
         if nearest_dist <= SIREN_PULSE_RADIUS and self.pulse_cooldown_remaining <= 0.0:
             self.cast_time_remaining = SIREN_CAST_TIME
@@ -183,22 +325,25 @@ class Siren(EnemyBase):
             self.vx = 0.0
             return
 
-        if nearest_dist <= SIREN_AGGRO_RANGE:
+        if nearest_dist <= _CHASE_RANGE:
             direction = 1.0 if float(nearest_player.x) > self.x else -1.0
             self.vx = direction * SIREN_CHASE_SPEED
             self.x += self.vx * dt
             self.state = "chasing"
-        else:
+        elif nearest_dist > _RETURN_RANGE and self._distance_to_guard_center() > _GUARD_RADIUS:
+            direction = 1.0 if self._guard_center_x > self.x else -1.0
+            self.vx = direction * SIREN_PATROL_SPEED
+            self.x += self.vx * dt
+            self.state = "returning"
+        elif not self.luring:
             self.state = "patrol"
-            self._update_patrol(dt, world)
-
-        world_min_x = 0.0
-        world_max_x = max(world_min_x, float(getattr(world, "world_width", 1600)) - float(self.width))
-        self.x = max(world_min_x, min(world_max_x, self.x))
+            self._update_patrol(dt)
 
     def to_dict(self) -> dict:
         payload = super().to_dict()
         payload["pulse_cooldown_remaining"] = self.pulse_cooldown_remaining
         payload["cast_time_remaining"] = self.cast_time_remaining
         payload["charmed_target_ids"] = sorted(self.charmed_targets.keys())
+        payload["luring"] = self.luring
+        payload["scream_active"] = self.scream_active
         return payload

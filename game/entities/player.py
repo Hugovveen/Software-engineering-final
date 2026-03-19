@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from config import PLAYER_SIZE
+from config import PLAYER_SIZE, SPRINT_MAX_ENERGY
 
 
 @dataclass
@@ -17,7 +17,7 @@ class Player:
     player_id: str
     name: str = "Player"
     x: float = 64.0
-    y: float = 360.0
+    y: float = 848.0
     vx: float = 0.0
     vy: float = 0.0
     width: int = field(default=PLAYER_SIZE[0])
@@ -27,6 +27,23 @@ class Player:
     charmed_by: str | None = None
     charm_timer: float = 0.0
     charm_level: int = 0
+    sprinting: bool = False
+    sprint_energy: float = SPRINT_MAX_ENERGY
+    health: int = 75
+    alive: bool = True
+    skin: str = "researcher"
+    max_carry: int = 3
+    carried_loot_count: int = 0
+    carried_loot_value: int = 0
+    flashlight_on: bool = True
+
+    def take_damage(self, amount: int) -> None:
+        """Apply damage. Sets alive=False when health reaches 0."""
+        if not self.alive:
+            return
+        self.health = max(0, self.health - amount)
+        if self.health <= 0:
+            self.alive = False
 
     def to_dict(self) -> dict:
         """Convert to a JSON-friendly dictionary for networking."""
@@ -44,4 +61,12 @@ class Player:
             "charmed_by": self.charmed_by,
             "charm_timer": self.charm_timer,
             "charm_level": self.charm_level,
+            "sprinting": self.sprinting,
+            "sprint_energy": self.sprint_energy,
+            "carried_loot_count": self.carried_loot_count,
+            "carried_loot_value": self.carried_loot_value,
+            "health": self.health,
+            "alive": self.alive,
+            "skin": self.skin,
+            "flashlight_on": self.flashlight_on,
         }
