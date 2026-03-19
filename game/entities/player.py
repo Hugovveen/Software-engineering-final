@@ -29,11 +29,13 @@ class Player:
     charm_level: int = 0
     sprinting: bool = False
     sprint_energy: float = SPRINT_MAX_ENERGY
-    health: int = 100
+    health: int = 75
     alive: bool = True
     skin: str = "researcher"
+    max_carry: int = 3
     carried_loot_count: int = 0
     carried_loot_value: int = 0
+    flashlight_on: bool = True
 
     def take_damage(self, amount: int) -> None:
         """Apply damage. Sets alive=False when health reaches 0."""
@@ -66,4 +68,5 @@ class Player:
             "health": self.health,
             "alive": self.alive,
             "skin": self.skin,
+            "flashlight_on": self.flashlight_on,
         }

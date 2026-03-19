@@ -91,6 +91,6 @@ WEEPING_ANGEL_CHASE_SPEED      = WEEPING_ANGEL_SPEED
 # --- Lighting ---
 FLASHLIGHT_RADIUS      = 800
 FLASHLIGHT_ANGLE_DEG   = 30
-DARKNESS_ALPHA         = 230     # 0=clear 255=black
+DARKNESS_ALPHA         = 248     # 0=clear 255=black — near-opaque outside flashlight
 FLASHLIGHT_CONE_ALPHA  = 150     # darkness kept inside flashlight cone
 FLASHLIGHT_GLOW_ALPHA  = 52      # darkness kept in local glow around player

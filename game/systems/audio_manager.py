@@ -73,6 +73,8 @@ SFX_PATHS = {
     "player_death":  str(_AUDIO_DIR / "sfx" / "player_death.ogg"),
     "game_over":     str(_AUDIO_DIR / "sfx" / "game_over.ogg"),
     "heartbeat":     str(_AUDIO_DIR / "sfx" / "heartbeat.ogg"),
+    "flashlight_on": str(_AUDIO_DIR / "sfx" / "flashlight_on.ogg"),
+    "flashlight_off":str(_AUDIO_DIR / "sfx" / "flashlight_off.ogg"),
 }
 
 MUSIC_VOLUME  = 0.45   # keep music under SFX in a horror game
@@ -238,6 +240,8 @@ class AudioManager:
             "player_death": ("tone", 0.6, 100, 0.3),
             "game_over": ("tone", 1.5, 80, 0.25),
             "heartbeat": ("heartbeat", 8.0, 72, 0.3),
+            "flashlight_on": ("tone", 0.05, 800, 0.4),
+            "flashlight_off": ("tone", 0.05, 400, 0.3),
         }
         for name, (kind, dur, freq, vol) in sfx_specs.items():
             wav_path = str(_AUDIO_DIR / "sfx" / f"{name}.wav")
@@ -552,6 +556,13 @@ class AudioManager:
 
     def on_item_drop(self) -> None:
         self.play_sfx("item_drop")
+
+    def on_flashlight_toggle(self, on: bool) -> None:
+        """Play a crisp click for flashlight toggle."""
+        key = "flashlight_on" if on else "flashlight_off"
+        sound = self._sfx.get(key)
+        if sound and not isinstance(sound, list):
+            sound.play()
 
     def on_door(self) -> None:
         self.play_sfx("door_creak")

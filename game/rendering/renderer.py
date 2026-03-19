@@ -76,6 +76,8 @@ class Renderer:
         # Quota met state tracking
         self._quota_met: bool = False
         self._quota_met_flash_timer: float = 0.0
+        # Game elapsed timer (for flashlight hint)
+        self._game_elapsed: float = 0.0
         # Fade overlay system
         self._fade_alpha: float = 0.0  # 0=transparent, 255=black
         self._fade_speed: float = 0.0  # alpha change per second (negative = fading in)
@@ -237,6 +239,23 @@ class Renderer:
         screen.blit(frame, draw_rect.topleft)
         return True
 
+    def _draw_enemy_sprite_frozen(
+        self,
+        screen: pygame.Surface,
+        draw_rect: pygame.Rect,
+        sprite_key: str,
+        facing_right: bool = True,
+    ) -> bool:
+        """Draw frame 0 of an enemy sprite without advancing animation."""
+        frames = self._get_scaled_enemy_frames(sprite_key, draw_rect.w, draw_rect.h)
+        if not frames:
+            return False
+        frame = frames[0]
+        if not facing_right:
+            frame = pygame.transform.flip(frame, True, False)
+        screen.blit(frame, draw_rect.topleft)
+        return True
+
     def _draw_background(self, screen: pygame.Surface, camera) -> None:
         if self._wall_surface is None:
             return
@@ -393,6 +412,10 @@ class Renderer:
             draw_x = int(sx - (draw_w - pw) / 2)
             draw_y = int(sy - (draw_h - ph))
             screen.blit(frame, (draw_x, draw_y))
+            # Spawn flash — brief white outline when mimic first appears
+            if player.get("spawn_flash"):
+                outline_rect = pygame.Rect(draw_x - 2, draw_y - 2, draw_w + 4, draw_h + 4)
+                pygame.draw.rect(screen, (255, 255, 255, 200), outline_rect, 2)
         else:
             color = self.SELF_COLOR if is_self else self.PLAYER_COLOR
             draw_rect = self._scaled_entity_rect(sx, sy, pw, ph)
@@ -697,51 +720,26 @@ class Renderer:
                 ay = int(esy) - 8
                 pygame.draw.polygon(screen, (255, 220, 80), [(ax, ay - 12), (ax - 8, ay), (ax + 8, ay)])
 
-        # --- Players ---
+        # --- Players (includes mimic copies from server) ---
         self_player: dict | None = None
         for player in game_state.get("players", []):
-            player_id = str(player.get("id", ""))
-            facing_right = facing_map.get(player_id, True)
-            if player.get("id") == self_id:
-                self_player = player
-            self._draw_player(
-                screen=screen,
-                camera=camera,
-                player=player,
-                is_self=player.get("id") == self_id,
-                facing_right=bool(facing_right),
-            )
-
-        # --- Mimic (Hugo's, unchanged) ---
-        mimic = game_state.get("mimic")
-        if mimic:
-            sx, sy = camera.world_to_screen(mimic["x"], mimic["y"])
-            mimic_rect = self._scaled_entity_rect(
-                sx,
-                sy,
-                int(mimic["w"]),
-                int(mimic["h"]),
-                scale=self.ENEMY_SPRITE_SCALE,
-            )
-            mimic_facing_right = float(mimic.get("vx", 0.0)) >= 0.0
-            drew_mimic = self._draw_enemy_sprite(
-                screen=screen,
-                draw_rect=mimic_rect,
-                entity_id=str(mimic.get("id", "mimic")),
-                sprite_key="mimic",
-                facing_right=mimic_facing_right,
-                fps=8.0,
-            )
-            if not drew_mimic:
-                pygame.draw.rect(screen, self.MIMIC_COLOR, mimic_rect)
+            try:
+                player_id = str(player.get("id", ""))
+                facing_right = facing_map.get(player_id, True)
+                if player.get("id") == self_id:
+                    self_player = player
+                self._draw_player(
+                    screen=screen,
+                    camera=camera,
+                    player=player,
+                    is_self=player.get("id") == self_id,
+                    facing_right=bool(facing_right),
+                )
+            except Exception as exc:
+                print(f"[RENDERER] Error drawing player {player.get('id', '?')}: {exc}")
 
         # Monsters
         self._draw_monsters(screen, camera, game_state.get("monsters", []))
-
-        # Hollow environmental effects
-        for monster in game_state.get("monsters", []):
-            if monster.get("type") == "hollow":
-                self._draw_hollow_effects(screen, camera, monster.get("effects", []))
 
         # Lighting overlay (applied after all entities)
         if enable_lighting:
@@ -779,7 +777,10 @@ class Renderer:
         loot_respawn_max = float(game_state.get("loot_respawn_max", 15.0))
         if loot_respawn_timer > 0:
             loot_respawn_remaining = max(0.0, loot_respawn_max - loot_respawn_timer)
-        self._draw_hud(screen, self_id, my_sanity, quota_data, carried_count, carried_value, self_health, time_remaining, difficulty, loot_respawn_remaining)
+        player_count = len(game_state.get("players", []))
+        flashlight_on = bool(self_player.get("flashlight_on", True)) if self_player else True
+        self._game_elapsed += 1.0 / 60.0
+        self._draw_hud(screen, self_id, my_sanity, quota_data, carried_count, carried_value, self_health, time_remaining, difficulty, loot_respawn_remaining, player_count, flashlight_on)
         self._draw_interaction_prompt(screen, interaction_prompt)
 
         # Respawn countdown overlay
@@ -813,12 +814,12 @@ class Renderer:
             mtype = m.get("type")
 
             if mtype == "siren":
-                sx, sy = camera.world_to_screen(m["x"], m["y"])
+                sx, sy = camera.world_to_screen(float(m.get("x", 0)), float(m.get("y", 0)))
                 siren_rect = self._scaled_entity_rect(
                     sx,
                     sy,
-                    int(m["w"]),
-                    int(m["h"]),
+                    int(m.get("w", 30)),
+                    int(m.get("h", 48)),
                     scale=self.ENEMY_SPRITE_SCALE,
                 )
                 siren_state = str(m.get("state", ""))
@@ -857,24 +858,34 @@ class Renderer:
                                        (int(siren_rect.centerx), int(siren_rect.y) - 8), 5)
 
             elif mtype == "weeping_angel":
-                sx, sy = camera.world_to_screen(m["x"], m["y"])
+                sx, sy = camera.world_to_screen(float(m.get("x", 0)), float(m.get("y", 0)))
                 angel_rect = self._scaled_entity_rect(
                     sx,
                     sy,
-                    int(m["w"]),
-                    int(m["h"]),
+                    int(m.get("w", 30)),
+                    int(m.get("h", 48)),
                     scale=self.ENEMY_SPRITE_SCALE,
                 )
                 angel_facing_right = float(m.get("vx", 0.0)) <= 0.0
-                drew_angel = self._draw_enemy_sprite(
-                    screen=screen,
-                    draw_rect=angel_rect,
-                    entity_id=str(m.get("id", "angel")),
-                    sprite_key="angel",
-                    facing_right=angel_facing_right,
-                    fps=7.0,
-                )
-                if m.get("frozen"):
+                angel_frozen = bool(m.get("frozen", False))
+                if angel_frozen:
+                    # Frozen: draw frame 0 only, no animation advance
+                    drew_angel = self._draw_enemy_sprite_frozen(
+                        screen=screen,
+                        draw_rect=angel_rect,
+                        sprite_key="angel",
+                        facing_right=angel_facing_right,
+                    )
+                else:
+                    drew_angel = self._draw_enemy_sprite(
+                        screen=screen,
+                        draw_rect=angel_rect,
+                        entity_id=str(m.get("id", "angel")),
+                        sprite_key="angel",
+                        facing_right=angel_facing_right,
+                        fps=7.0,
+                    )
+                if angel_frozen:
                     # Crouched — covering face
                     arm_h = max(2, int(angel_rect.h * 0.16))
                     if not drew_angel:
@@ -906,45 +917,6 @@ class Renderer:
                     pygame.draw.circle(warn_surf, (220, 40, 40, warn_alpha), (warn_radius + 1, warn_radius + 1), warn_radius)
                     screen.blit(warn_surf, (warn_x - warn_radius - 1, warn_y - warn_radius))
 
-            # Hollow: no sprite — handled by _draw_hollow_effects
-
-    def _draw_hollow_effects(
-        self,
-        screen: pygame.Surface,
-        camera,
-        effects: list[dict],
-    ) -> None:
-        """Render Hollow environmental cues (only visual evidence of it).
-
-        Args:
-            screen:  Main surface.
-            camera:  Camera for coordinate transform.
-            effects: Effect dicts from Hollow.get_effects().
-        """
-        for effect in effects:
-            etype = effect.get("type")
-            ex, ey = effect.get("x", 0), effect.get("y", 0)
-            sx, sy = camera.world_to_screen(ex, ey)
-            intensity = effect.get("intensity", 1.0)
-
-            if etype == "footprint":
-                alpha = int(180 * intensity)
-                s = pygame.Surface((14, 7), pygame.SRCALPHA)
-                pygame.draw.ellipse(s, (200, 200, 200, alpha), s.get_rect())
-                screen.blit(s, (int(sx) - 7, int(sy) - 3))
-
-            elif etype == "dust":
-                alpha = int(80 * intensity)
-                s = pygame.Surface((18, 18), pygame.SRCALPHA)
-                pygame.draw.circle(s, (200, 200, 200, alpha), (9, 9), 9)
-                screen.blit(s, (int(sx) - 9, int(sy) - 9))
-
-            elif etype == "breath":
-                alpha = int(120 * intensity)
-                s = pygame.Surface((24, 14), pygame.SRCALPHA)
-                pygame.draw.ellipse(s, (230, 240, 255, alpha), s.get_rect())
-                screen.blit(s, (int(sx) - 12, int(sy) - 7))
-
     # ------------------------------------------------------------------
     # HUD
     # ------------------------------------------------------------------
@@ -967,14 +939,17 @@ class Renderer:
         time_remaining: float = 300.0,
         difficulty: str = "RESEARCHER",
         loot_respawn_remaining: float = 0.0,
+        player_count: int = 1,
+        flashlight_on: bool = True,
     ) -> None:
         """Draw clean minimal HUD: health bar, sanity bar, countdown timer, quota."""
         sw, sh = screen.get_size()
         font = pygame.font.SysFont("monospace", 14)
 
         self._draw_hud_bars(screen, font, health, sanity, sw, sh)
+        self._draw_hud_flashlight_icon(screen, font, sw, sanity, flashlight_on)
         self._draw_hud_timer(screen, sw, time_remaining)
-        self._draw_hud_right_panel(screen, font, sw, quota_data, difficulty, carried_count, carried_value, loot_respawn_remaining)
+        self._draw_hud_right_panel(screen, font, sw, quota_data, difficulty, carried_count, carried_value, loot_respawn_remaining, player_count)
         self._draw_hud_quota_flash(screen, sw, sh, quota_data)
         self._draw_hud_hints(screen, sw, sh, quota_data, carried_count)
 
@@ -1006,11 +981,58 @@ class Renderer:
         pygame.draw.rect(screen, san_color, pygame.Rect(bar_x, san_y, san_filled, self._HUD_BAR_H))
         pygame.draw.rect(screen, (80, 80, 80), pygame.Rect(bar_x, san_y, self._HUD_BAR_W, self._HUD_BAR_H), 1)
 
-        if san_frac < 0.10:
-            vignette_alpha = int(80 * (1.0 - san_frac / 0.10))
+        if san_frac < 0.15:
+            vignette_alpha = int(80 * (1.0 - san_frac / 0.15))
             vig = pygame.Surface((sw, sh), pygame.SRCALPHA)
             vig.fill((120, 0, 0, vignette_alpha))
             screen.blit(vig, (0, 0))
+
+    def _draw_hud_flashlight_icon(
+        self, screen: pygame.Surface, font: pygame.font.Font,
+        sw: int, sanity: float, flashlight_on: bool,
+    ) -> None:
+        """Draw a small torch icon next to the sanity bar + hint text."""
+        # Position: right of the sanity bar
+        icon_x = self._HUD_BAR_LABEL_OFFSET + self._HUD_MARGIN + self._HUD_BAR_W + 12
+        icon_y = self._HUD_MARGIN + self._HUD_BAR_H + 6
+
+        # Torch body (small rectangle)
+        body_w, body_h = 6, 14
+        body_rect = pygame.Rect(icon_x + 3, icon_y + 4, body_w, body_h)
+        body_color = (180, 150, 60) if flashlight_on else (60, 55, 50)
+        pygame.draw.rect(screen, body_color, body_rect)
+
+        # Flame / light tip (triangle above body)
+        if flashlight_on:
+            tip_color = (255, 220, 80)
+            tip_points = [
+                (icon_x + 6, icon_y),
+                (icon_x + 1, icon_y + 6),
+                (icon_x + 11, icon_y + 6),
+            ]
+            pygame.draw.polygon(screen, tip_color, tip_points)
+            # Small glow
+            glow_surf = pygame.Surface((16, 16), pygame.SRCALPHA)
+            pygame.draw.circle(glow_surf, (255, 220, 80, 40), (8, 8), 8)
+            screen.blit(glow_surf, (icon_x - 2, icon_y - 5))
+        else:
+            tip_color = (80, 70, 60)
+            tip_points = [
+                (icon_x + 6, icon_y + 1),
+                (icon_x + 2, icon_y + 6),
+                (icon_x + 10, icon_y + 6),
+            ]
+            pygame.draw.polygon(screen, tip_color, tip_points)
+
+        # "F — flashlight" hint during first 30 seconds
+        if self._game_elapsed < 30.0:
+            hint_alpha = min(255, int(255 * max(0.0, 1.0 - self._game_elapsed / 30.0)))
+            hint_font = pygame.font.SysFont("monospace", 11)
+            hint_surf = hint_font.render("F - flashlight", True, (180, 180, 160))
+            hint_s = pygame.Surface(hint_surf.get_size(), pygame.SRCALPHA)
+            hint_s.blit(hint_surf, (0, 0))
+            hint_s.set_alpha(hint_alpha)
+            screen.blit(hint_s, (icon_x + 16, icon_y + 2))
 
     def _sanity_status_label(self, sanity: float) -> tuple[str, tuple[int, int, int]]:
         if sanity > 60:
@@ -1024,13 +1046,12 @@ class Renderer:
     def _sanity_bar_color(self, san_frac: float) -> tuple[int, int, int]:
         if san_frac > 0.5:
             return (80, 200, 80)
-        if san_frac > 0.25:
-            pulse = 0.7 + 0.3 * math.sin(time.time() * 3.0)
-            return (int(200 * pulse), int(160 * pulse), 40)
-        if san_frac > 0.1:
-            flash = 0.5 + 0.5 * math.sin(time.time() * 8.0)
-            return (int(220 * flash + 35), 40, 40)
-        flash = 0.5 + 0.5 * math.sin(time.time() * 12.0)
+        if san_frac > 0.30:
+            return (200, 160, 40)
+        if san_frac > 0.15:
+            pulse = 0.7 + 0.3 * math.sin(time.time() * 5.0)
+            return (int(220 * pulse + 35), int(60 * pulse), 40)
+        flash = 0.5 + 0.5 * math.sin(time.time() * 10.0)
         return (int(255 * flash), 20, 20)
 
     def _draw_hud_timer(self, screen: pygame.Surface, sw: int, time_remaining: float) -> None:
@@ -1059,7 +1080,7 @@ class Renderer:
     def _draw_hud_right_panel(
         self, screen: pygame.Surface, font: pygame.font.Font, sw: int,
         quota_data: dict, difficulty: str, carried_count: int, carried_value: int,
-        loot_respawn_remaining: float,
+        loot_respawn_remaining: float, player_count: int = 1,
     ) -> None:
         m = self._HUD_MARGIN
         collected = quota_data.get("collected", 0)
@@ -1076,9 +1097,28 @@ class Renderer:
         diff_surf = font.render(difficulty, True, diff_colors.get(difficulty, (200, 200, 80)))
         screen.blit(diff_surf, (sw - diff_surf.get_width() - m, 32))
 
+        # Carry slots — dynamic based on player count
+        slot_size = 18
+        slot_gap = 4
+        slot_y = 48
+        max_carry = 5 if player_count <= 1 else 3
+        total_slot_w = max_carry * slot_size + (max_carry - 1) * slot_gap
+        slot_start_x = sw - total_slot_w - m
+        carry_label = font.render("CARRY", True, (200, 200, 180))
+        screen.blit(carry_label, (slot_start_x - carry_label.get_width() - 6, slot_y))
+        for i in range(max_carry):
+            sx = slot_start_x + i * (slot_size + slot_gap)
+            rect = pygame.Rect(sx, slot_y, slot_size, slot_size)
+            if i < carried_count:
+                pygame.draw.rect(screen, (255, 208, 80), rect)
+                pygame.draw.rect(screen, (200, 170, 50), rect, 1)
+            else:
+                pygame.draw.rect(screen, (30, 30, 40), rect)
+                pygame.draw.rect(screen, (60, 60, 70), rect, 1)
         if carried_count > 0:
-            carry_surf = font.render(f"CARRYING: {carried_count} ({carried_value})", True, (255, 215, 80))
-            screen.blit(carry_surf, (sw - carry_surf.get_width() - m, 48))
+            penalty_pct = int(carried_count * 8)
+            pen_surf = font.render(f"-{penalty_pct}% speed", True, (200, 140, 60))
+            screen.blit(pen_surf, (slot_start_x, slot_y + slot_size + 3))
 
         if quota_data.get("is_night"):
             night_surf = font.render("NIGHT", True, (100, 140, 255))
@@ -1212,6 +1252,45 @@ class Renderer:
             fade_surf = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
             fade_surf.fill((0, 0, 0, alpha))
             screen.blit(fade_surf, (0, 0))
+
+    # ------------------------------------------------------------------
+    # Screen image helper (cached, scaled to screen size)
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Pause menu
+    # ------------------------------------------------------------------
+
+    def draw_pause_menu(self, screen: pygame.Surface, selected: int = 0) -> None:
+        """Draw semi-transparent pause overlay with three options."""
+        sw, sh = screen.get_size()
+        overlay = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 160))
+        screen.blit(overlay, (0, 0))
+
+        font_title = pygame.font.SysFont("monospace", 36)
+        font_option = pygame.font.SysFont("monospace", 22)
+
+        title = font_title.render("PAUSED", True, (220, 200, 140))
+        screen.blit(title, (sw // 2 - title.get_width() // 2, sh // 2 - 100))
+
+        options = [
+            ("RESUME", "ENTER / ESC"),
+            ("LOBBY", "L"),
+            ("QUIT", "Q"),
+        ]
+        for i, (label, hint) in enumerate(options):
+            y = sh // 2 - 20 + i * 44
+            if i == selected:
+                color = (255, 240, 180)
+                marker = "> "
+            else:
+                color = (220, 200, 140)
+                marker = "  "
+            text = font_option.render(f"{marker}{label}", True, color)
+            hint_surf = font_option.render(f"  ({hint})", True, (120, 110, 90))
+            screen.blit(text, (sw // 2 - 100, y))
+            screen.blit(hint_surf, (sw // 2 - 100 + text.get_width(), y))
 
     # ------------------------------------------------------------------
     # Screen image helper (cached, scaled to screen size)
@@ -1364,13 +1443,11 @@ class Renderer:
 
         # --- Name input below character selection ---
         name_y = box_top + box_h + 12
-        name_label = font_label.render("enter your name:", True, (160, 170, 140))
         name_panel_w = 380
         name_panel_h = 44
         name_panel = pygame.Surface((name_panel_w, name_panel_h), pygame.SRCALPHA)
         name_panel.fill((0, 0, 0, 170))
         name_panel_x = sw // 2 - name_panel_w // 2
-        screen.blit(name_label, (name_panel_x, name_y - 22))
         screen.blit(name_panel, (name_panel_x, name_y))
         pygame.draw.rect(screen, (80, 100, 70), pygame.Rect(name_panel_x, name_y, name_panel_w, name_panel_h), 1)
 
@@ -1524,7 +1601,12 @@ class Renderer:
     def draw_game_over(self, screen: pygame.Surface, game_state: dict, show_prompt: bool = True) -> None:
         sw, sh = screen.get_size()
         assets_root = Path(__file__).resolve().parents[1] / "assets"
-        bg = self._get_screen_image("game_over", assets_root / "wall" / "dead_screen" / "dead_screen_multiplayer.png")
+        players = game_state.get("players", [])
+        real_players = [p for p in players if not p.get("is_mimic", False)]
+        if len(real_players) <= 1:
+            bg = self._get_screen_image("game_over_solo", assets_root / "wall" / "dead_screen" / "dead_screen_player_1.png")
+        else:
+            bg = self._get_screen_image("game_over_multi", assets_root / "wall" / "dead_screen" / "dead_screen_multiplayer.png")
         if bg is not None:
             screen.blit(bg, (0, 0))
         else:
@@ -1533,12 +1615,26 @@ class Renderer:
         font_name = pygame.font.SysFont("monospace", 22)
         font_info = pygame.font.SysFont("monospace", 18)
 
-        players = game_state.get("players", [])
-        start_y = sh // 2 - 20
-        for i, p in enumerate(players):
+        # Player names + "CONSUMED" text only — background image has the visuals
+        shown = [p for p in real_players if not p.get("is_mimic", False)]
+        name_y = sh // 2 + 20
+
+        if len(shown) == 1:
+            positions = [sw // 2]
+        elif len(shown) >= 2:
+            positions = [sw // 3, 2 * sw // 3]
+        else:
+            positions = []
+
+        for idx, p in enumerate(shown):
+            if idx >= len(positions):
+                break
+            cx = positions[idx]
             name = str(p.get("name", "player"))
-            line = font_name.render(f"{name}  —  CONSUMED", True, (160, 60, 60))
-            screen.blit(line, (sw // 2 - line.get_width() // 2, start_y + i * 28))
+            name_surf = font_name.render(name, True, (160, 60, 60))
+            screen.blit(name_surf, (cx - name_surf.get_width() // 2, name_y))
+            consumed_surf = font_info.render("CONSUMED", True, (100, 40, 40))
+            screen.blit(consumed_surf, (cx - consumed_surf.get_width() // 2, name_y + 28))
 
         quota = game_state.get("quota", {})
         collected = quota.get("collected", 0)
@@ -1564,7 +1660,11 @@ class Renderer:
         if bg is not None:
             screen.blit(bg, (0, 0))
         else:
-            screen.fill((5, 5, 15))
+            # Deep indigo fallback — never just black
+            screen.fill((12, 8, 35))
+        if not hasattr(self, '_ending_draw_logged'):
+            self._ending_draw_logged = True
+            print(f"[ENDING] Drawing rooftop, image_loaded={bg is not None}")
 
         # Draw rooftop platform (floor at y=650 relative to screen, full width)
         platform_y = int(sh * 0.9)

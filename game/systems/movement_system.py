@@ -25,8 +25,7 @@ def _clamp_axis(value: float) -> float:
 
 
 def _overlaps_ladder(player, ladders: Sequence[tuple[float, float, float, float]]) -> bool:
-    player_left = float(player.x)
-    player_right = player_left + float(player.width)
+    player_center_x = float(player.x) + float(player.width) * 0.5
     player_top = float(player.y)
     player_bottom = player_top + float(player.height)
 
@@ -36,9 +35,8 @@ def _overlaps_ladder(player, ladders: Sequence[tuple[float, float, float, float]
         ladder_top = float(ladder_y)
         ladder_bottom = ladder_top + float(ladder_h)
 
-        if player_right <= ladder_left:
-            continue
-        if player_left >= ladder_right:
+        # Player center x must be within ladder horizontal bounds (±20px tolerance)
+        if player_center_x < ladder_left - 20 or player_center_x > ladder_right + 20:
             continue
         if player_bottom <= ladder_top:
             continue
@@ -176,7 +174,9 @@ def apply_player_input(
     player.on_ladder = overlap_ladder and (requested_ladder or abs(climb) > 0.01)
 
     sprint_multiplier = _update_sprint_state(player, wants_sprint=wants_sprint, move_x=move_x, dt=dt)
-    player.vx = move_x * PLAYER_SPEED * sprint_multiplier
+    carry_count = int(getattr(player, "carried_loot_count", 0))
+    carry_penalty = max(0.40, 1.0 - carry_count * 0.08)
+    player.vx = move_x * PLAYER_SPEED * sprint_multiplier * carry_penalty
 
     if wants_jump and not player.on_ladder and _is_grounded(player, floor_y, platforms):
         player.vy = -float(JUMP_SPEED)

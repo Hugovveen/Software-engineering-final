@@ -100,7 +100,7 @@ class FacilityMap:
         self.enemy_spawn_points = {
             "mimic": (384, 912),
             "siren": (700, 390),         # middle platform (row 7, y=448)
-            "weeping_angel": (1100, 262), # upper platform right (row 5, y=320)
+            "weeping_angel": (1400, 912), # ground floor far right, behind extraction
             "hollow": (800, 902),         # ground floor roamer
         }
 

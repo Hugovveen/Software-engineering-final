@@ -62,6 +62,7 @@ class Siren(EnemyBase):
     _guard_center_x: float = field(default=-1.0, repr=False)
     _guard_center_y: float = field(default=-1.0, repr=False)
     _guard_initialized: bool = field(default=False, repr=False)
+    _flashlight_visibility: dict = field(default_factory=dict, repr=False)
 
     def _distance_to_player(self, player: Any) -> float:
         dx = float(player.x) - self.x
@@ -77,6 +78,20 @@ class Siren(EnemyBase):
             player = players[player_id]
             if not getattr(player, "alive", True):
                 continue
+            # Siren cannot detect players with flashlight off
+            flashlight_on = getattr(player, "flashlight_on", True)
+            if not flashlight_on:
+                # Log detection state change
+                prev = self._flashlight_visibility.get(player_id, True)
+                if prev:
+                    print(f"[SIREN] Player {player_id} flashlight={'OFF'} — hidden")
+                    self._flashlight_visibility[player_id] = False
+                continue
+            else:
+                prev = self._flashlight_visibility.get(player_id, True)
+                if not prev:
+                    print(f"[SIREN] Player {player_id} flashlight={'ON'} — detected")
+                    self._flashlight_visibility[player_id] = True
             dist = self._distance_to_player(player)
             if dist < nearest_dist:
                 nearest_dist = dist

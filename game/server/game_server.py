@@ -2,7 +2,7 @@
 
 Responsibilities:
 - track connected players
-- update mimic state + new monsters (Siren, Weeping Angel, Hollow)
+- update mimic state + monsters (Siren, Weeping Angel)
 - manage sanity, day/night, and sample quota
 - receive movement commands
 - broadcast game state at a fixed tick rate
@@ -24,7 +24,6 @@ from config import (
     SERVER_PORT,
     TICK_RATE,
 )
-from entities.hollow import Hollow
 from entities.loot import Loot
 from entities.mimic import Mimic
 from entities.player import Player
@@ -39,14 +38,12 @@ from systems.sanity import SanitySystem
 
 
 # Damage constants (per-hit or per-second base values, before difficulty scaling)
-_SIREN_DPS = 12
+_SIREN_DPS = 22
 _SIREN_DAMAGE_RADIUS = 150.0
 _ANGEL_HIT_DAMAGE = 35
-_ANGEL_HIT_RADIUS = 80.0
-_ANGEL_HIT_COOLDOWN = 2.0
-_HOLLOW_DPS = 8
-_HOLLOW_DAMAGE_RADIUS = 100.0
-_MIMIC_HIT_DAMAGE = 20
+_ANGEL_HIT_RADIUS = 70.0
+_ANGEL_HIT_COOLDOWN = 3.0
+_MIMIC_HIT_DAMAGE = 25
 _DAMAGE_INVINCIBILITY = 2.0
 _RESPAWN_DELAY = 10.0
 _MIMIC_SPAWN_THRESHOLD = 180.0
@@ -76,17 +73,17 @@ class GameServer:
         self._game_timer: float = 300.0  # 5-minute countdown
         self._respawn_timers: dict[str, float] = {}  # player_id → seconds remaining
         self._invincibility_timers: dict[str, float] = {}  # player_id → seconds remaining
-        self._angel_hit_cooldown: float = 0.0  # global angel attack cooldown
+        self._angel_hit_cooldown: float = 0.0  # server-side angel attack cooldown
 
         spawns = self.world.enemy_spawn_points
         self.siren  = Siren(x=float(spawns["siren"][0]),  y=float(spawns["siren"][1]))
         self.angel  = WeepingAngel(x=float(spawns["weeping_angel"][0]), y=float(spawns["weeping_angel"][1]))
-        self.hollow = Hollow(x=float(spawns["hollow"][0]), y=float(spawns["hollow"][1]))
-
         self.sanity = SanitySystem()
         self.quota  = QuotaSystem()
 
         self.facing_map: dict[str, bool] = {}   # player_id → facing_right
+        self._siren_near_timer: dict[str, float] = {}  # player_id → seconds near siren with flashlight off
+        self._siren_force_cooldown: dict[str, float] = {}  # player_id → seconds before siren can force again
 
         self._pending_throws: list[tuple[float, float]] = []
         self._throw_window = 0   # frame counter for simultaneous throw window
@@ -110,22 +107,40 @@ class GameServer:
         self._loot_respawn_timer: float = 0.0  # countdown to next batch respawn
         self._spawn_loot_items()
 
-    def _spawn_loot_items(self) -> None:
-        self._loot_items.clear()
+    def _spawn_loot_items(self, count: int | None = None) -> None:
         loot_min = self._loot_min
         loot_max = self._loot_max
-        for spawn_x, spawn_y in getattr(self.world, "loot_spawn_points", []):
-            self._loot_items.append(
-                Loot(
-                    loot_id=f"loot-{self._next_loot_id}",
-                    x=float(spawn_x),
-                    y=float(spawn_y),
-                    value=int(random.randint(loot_min, loot_max)),
+        spawn_points = list(getattr(self.world, "loot_spawn_points", []))
+
+        if count is None:
+            # Full respawn: clear everything and spawn at all points
+            self._loot_items.clear()
+            for spawn_x, spawn_y in spawn_points:
+                self._loot_items.append(
+                    Loot(
+                        loot_id=f"loot-{self._next_loot_id}",
+                        x=float(spawn_x),
+                        y=float(spawn_y),
+                        value=int(random.randint(loot_min, loot_max)),
+                    )
                 )
-            )
-            self._next_loot_id += 1
+                self._next_loot_id += 1
+            print(f"[MAP] {len(self._loot_items)} loot items spawned (value {loot_min}-{loot_max})")
+        else:
+            # Partial respawn: append new items at random spawn points
+            selected = random.sample(spawn_points, min(count, len(spawn_points)))
+            for spawn_x, spawn_y in selected:
+                self._loot_items.append(
+                    Loot(
+                        loot_id=f"loot-{self._next_loot_id}",
+                        x=float(spawn_x),
+                        y=float(spawn_y),
+                        value=int(random.randint(loot_min, loot_max)),
+                    )
+                )
+                self._next_loot_id += 1
+
         self._loot_respawn_timer = 0.0
-        print(f"[MAP] {len(self._loot_items)} loot items spawned (value {loot_min}-{loot_max})")
 
     def _update_loot_entities(self, dt: float) -> None:
         floor_y = float(self.world.floor_y())
@@ -172,6 +187,9 @@ class GameServer:
         )
 
     def _try_pickup_loot(self, player: Player) -> bool:
+        max_carry = 5 if len(self.players) == 1 else 3
+        if player.carried_loot_count >= max_carry:
+            return False
         center_x, center_y = self._player_center(player)
         nearest_loot: Loot | None = None
         nearest_distance = float("inf")
@@ -317,6 +335,10 @@ class GameServer:
         elif input_state["move_x"] < 0:
             self.facing_map[player_id] = False
 
+        # Sync flashlight state
+        if "flashlight_on" in message:
+            player.flashlight_on = bool(message["flashlight_on"])
+
     def _handle_item_throw(self, conn: socket.socket, message: dict) -> None:
         """Process a thrown item message from a client.
 
@@ -358,6 +380,8 @@ class GameServer:
         self._mimics.clear()
         self._respawn_timers.clear()
         self._invincibility_timers.clear()
+        self._siren_near_timer.clear()
+        self._siren_force_cooldown.clear()
         self._angel_hit_cooldown = 0.0
         # Reset quota for new round with difficulty target
         self.quota = QuotaSystem(target_quota=preset["quota"])
@@ -420,7 +444,6 @@ class GameServer:
             self._game_timer = 300.0
             self._respawn_timers.clear()
             self._invincibility_timers.clear()
-            self._angel_hit_cooldown = 0.0
             self.taken_skins.clear()
             self._events.clear()
             self._next_loot_id = 1
@@ -459,7 +482,18 @@ class GameServer:
         for player in self.players.values():
             if not player.alive:
                 if player.player_id not in self._respawn_timers:
-                    self._respawn_timers[player.player_id] = _RESPAWN_DELAY
+                    if len(self.players) == 1:
+                        print(f"[DEATH] {player.player_id} died. Solo=True — instant game over")
+                        self.round_state = "GAME_OVER"
+                        self._emit_event({
+                            "type": "ROUND_STATE_CHANGED",
+                            "state": "GAME_OVER",
+                            "round_number": 1,
+                            "reason": "solo_death",
+                        })
+                    else:
+                        print(f"[DEATH] {player.player_id} died. Solo=False — respawn in {_RESPAWN_DELAY}s")
+                        self._respawn_timers[player.player_id] = _RESPAWN_DELAY
                 continue
             if self._invincibility_timers.get(player.player_id, 0.0) > 0:
                 continue
@@ -471,7 +505,6 @@ class GameServer:
                 self._invincibility_timers[player.player_id] = _DAMAGE_INVINCIBILITY
 
     def _tick_cooldowns(self, dt: float) -> None:
-        self._angel_hit_cooldown = max(0.0, self._angel_hit_cooldown - dt)
         for pid in list(self._invincibility_timers):
             self._invincibility_timers[pid] = max(0.0, self._invincibility_timers[pid] - dt)
             if self._invincibility_timers[pid] <= 0:
@@ -488,55 +521,106 @@ class GameServer:
             player.take_damage(dmg)
             took_damage = True
 
-        # Weeping Angel: instant hit on touch, with cooldown + lunge freeze
-        if not self.angel.frozen and self._angel_hit_cooldown <= 0:
-            ax = self.angel.x + self.angel.width * 0.5
-            ay = self.angel.y + self.angel.height * 0.5
-            if math.hypot(px - ax, py - ay) < _ANGEL_HIT_RADIUS:
-                dmg = max(1, int(_ANGEL_HIT_DAMAGE * self._dmg_mult))
-                player.take_damage(dmg)
-                self._angel_hit_cooldown = _ANGEL_HIT_COOLDOWN
-                self.angel.on_touched_player()
-                took_damage = True
+        # Weeping Angel: simple proximity damage when not frozen
+        ax = self.angel.x + self.angel.width * 0.5
+        ay = self.angel.y + self.angel.height * 0.5
+        angel_dist = math.hypot(px - ax, py - ay)
 
-        # Hollow: DPS within radius (scaled by difficulty)
-        if math.hypot(px - self.hollow.x, py - self.hollow.y) < _HOLLOW_DAMAGE_RADIUS:
-            dmg = max(1, int(_HOLLOW_DPS * dt * self._dmg_mult))
-            player.take_damage(dmg)
-            took_damage = True
+        # Debug: print when any player is within 200px
+        if angel_dist < 200.0:
+            print(f"[ANGEL] checking damage: dist={angel_dist:.1f}, frozen={self.angel.frozen}, cooldown={self._angel_hit_cooldown:.1f}")
 
-        # Mimics: instant damage on touch
-        for mimic in self._mimics:
-            if not getattr(mimic, '_active', False):
-                continue
-            if not mimic.touched_target_this_tick:
-                continue
-            if player.player_id != mimic.target_player_id:
-                continue
-            dmg = max(1, int(_MIMIC_HIT_DAMAGE * self._dmg_mult))
+        if not self.angel.frozen and angel_dist < _ANGEL_HIT_RADIUS and self._angel_hit_cooldown <= 0:
+            dmg = max(1, int(_ANGEL_HIT_DAMAGE * self._dmg_mult))
             player.take_damage(dmg)
+            self._angel_hit_cooldown = _ANGEL_HIT_COOLDOWN
+            self.angel.attacking = True  # visual feedback for renderer
+            print(f"[ANGEL] Hit {player.player_id} for {dmg} damage (dist={angel_dist:.1f})")
             took_damage = True
 
         return took_damage
 
+    def _apply_siren_pull(self, dt: float) -> None:
+        """Apply gentle pull toward Siren for players within 200px with sanity < 50."""
+        _PULL_RADIUS = 200.0
+        _PULL_STRENGTH = 0.8
+        _MAX_PULL_FRAC = 0.30  # never exceed 30% of walk speed
+        from config import PLAYER_SPEED
+        max_pull_speed = PLAYER_SPEED * _MAX_PULL_FRAC
+
+        sx = self.siren.x + self.siren.width * 0.5
+        sy = self.siren.y + self.siren.height * 0.5
+
+        for pid, player in self.players.items():
+            if not player.alive:
+                continue
+            px = float(player.x) + float(player.width) * 0.5
+            py = float(player.y) + float(player.height) * 0.5
+            dist = math.hypot(px - sx, py - sy)
+            if dist > _PULL_RADIUS:
+                continue
+            sanity = self.sanity.get(pid)
+            if sanity >= 50:
+                continue
+            dx = sx - px
+            direction = 1.0 if dx > 0 else -1.0 if dx < 0 else 0.0
+            pull = min(_PULL_STRENGTH, max_pull_speed) * direction * dt
+            player.x += pull
+            # Clamp to world
+            player.x = max(0.0, min(float(self.world.world_width) - float(player.width), player.x))
+            if not hasattr(self, '_siren_pull_log') or (time.perf_counter() - self._siren_pull_log) >= 2.0:
+                self._siren_pull_log = time.perf_counter()
+                print(f"[SIREN] Charm pull applied to {pid}: sanity={sanity:.1f}, dist={dist:.1f}")
+
+    def _find_distant_spawn(self, player: Player) -> tuple[float, float]:
+        """Find a spawn point on a platform edge at least 400px from the player."""
+        platforms = getattr(self.world, "platforms", [])
+        candidates: list[tuple[float, float]] = []
+        for px, py, pw, ph in platforms:
+            # Left edge and right edge of each platform
+            candidates.append((float(px) + 10, float(py) - 48))
+            candidates.append((float(px + pw) - 40, float(py) - 48))
+        # Filter to those at least 400px from player
+        import math as _math
+        far = [(cx, cy) for cx, cy in candidates
+               if _math.hypot(cx - player.x, cy - player.y) >= 400]
+        if far:
+            return random.choice(far)
+        # Fallback: pick the farthest candidate
+        if candidates:
+            candidates.sort(key=lambda c: _math.hypot(c[0] - player.x, c[1] - player.y), reverse=True)
+            return candidates[0]
+        # Ultimate fallback
+        return (float(self.world.world_width) - 100, float(self.world.floor_y()) - 48)
+
     def _trigger_lights_out(self) -> None:
         """Spawn one mimic per player and broadcast LIGHTS_OUT event."""
-        print(f"[SERVER] LIGHTS OUT — spawning mimics for {len(self.players)} player(s)")
+        solo = len(self.players) == 1
+        print(f"[SERVER] LIGHTS OUT — spawning mimics for {len(self.players)} player(s), solo={solo}")
         self._mimics_active = True
         self._mimics.clear()
         for player_id, player in self.players.items():
+            if solo:
+                mimic_skin = "student" if player.skin == "researcher" else "researcher"
+                mimic_name = "???"
+            else:
+                mimic_skin = player.skin
+                mimic_name = player.name
+            # Spawn mimic at least 400px from the player on a platform edge
+            spawn_x, spawn_y = self._find_distant_spawn(player)
             mimic = Mimic(
                 enemy_id=f"mimic-{self._mimic_next_id}",
-                x=player.x,
-                y=player.y,
+                x=spawn_x,
+                y=spawn_y,
             )
             self._mimic_next_id += 1
             mimic.activate(
                 target_player_id=player_id,
-                skin=player.skin,
-                name=player.name,
-                start_x=player.x,
-                start_y=player.y,
+                skin=mimic_skin,
+                name=mimic_name,
+                start_x=spawn_x,
+                start_y=spawn_y,
+                solo=solo,
             )
             self._mimics.append(mimic)
         self._emit_event({
@@ -548,7 +632,6 @@ class GameServer:
         all_monsters = [
             self.siren.to_dict(),
             self.angel.to_dict(),
-            self.hollow.to_dict(),
         ] if active else []
 
         # Include mimic copies in the players list so they render identically
@@ -633,6 +716,10 @@ class GameServer:
                         self._handle_interact(conn)
                     elif msg_type == "SELL_SAMPLES":
                         self._handle_sell_samples(conn, msg)
+                    elif msg_type == "PLAYER_FLASHLIGHT":
+                        pid = self.connections.get(conn)
+                        if pid and pid in self.players:
+                            self.players[pid].flashlight_on = bool(msg.get("on", True))
                     elif msg_type == "START_GAME":
                         self._handle_start_game(conn)
 
@@ -653,48 +740,93 @@ class GameServer:
                                 if loot.loot_id == loot_id and not loot.collected:
                                     loot.collected = True
 
-                    all_monsters = [self.siren, self.angel, self.hollow]
+                    all_monsters = [self.siren, self.angel]
 
                     self.siren.update(dt=target_dt, world=self.world, players=self.players)
-                    self.angel.update(dt=target_dt, world=self.world, players=self.players)
+                    self.angel.update(dt=target_dt, world=self.world, players=self.players, facing_map=self.facing_map)
 
-                    if self._throw_window > 0:
-                        self._throw_window -= 1
-                        if self._throw_window == 0 and self._pending_throws:
-                            if not self.hollow.group_redirect(self._pending_throws):
-                                lx, ly = self._pending_throws[-1]
-                                self.hollow.redirect(lx, ly)
-                            self._pending_throws.clear()
+                    # Tick siren force cooldowns
+                    for pid in list(self._siren_force_cooldown):
+                        self._siren_force_cooldown[pid] -= target_dt
+                        if self._siren_force_cooldown[pid] <= 0:
+                            del self._siren_force_cooldown[pid]
 
-                    self.hollow.update(
-                        dt=target_dt,
-                        players=self.players,
-                        floor_y=self.world.floor_y(),
-                        world_min_x=10,
-                        world_max_x=self.world.world_width - 40,
-                        sanity_values=self.sanity.to_dict(),
-                    )
+                    # Siren forces flashlight on — if player lingers nearby with flashlight off
+                    sx = self.siren.x + self.siren.width * 0.5
+                    sy = self.siren.y + self.siren.height * 0.5
+                    for pid, player in self.players.items():
+                        if not player.alive:
+                            self._siren_near_timer.pop(pid, None)
+                            continue
+                        if not player.flashlight_on:
+                            # Skip if force cooldown is active for this player
+                            if self._siren_force_cooldown.get(pid, 0.0) > 0:
+                                self._siren_near_timer.pop(pid, None)
+                                continue
+                            px = float(player.x) + float(player.width) * 0.5
+                            py = float(player.y) + float(player.height) * 0.5
+                            dist = math.hypot(px - sx, py - sy)
+                            if dist <= 350.0:
+                                self._siren_near_timer[pid] = self._siren_near_timer.get(pid, 0.0) + target_dt
+                                if self._siren_near_timer[pid] >= 4.0:
+                                    player.flashlight_on = True
+                                    self._siren_near_timer[pid] = 0.0
+                                    self._siren_force_cooldown[pid] = 15.0
+                                    print(f"[SIREN] Forced flashlight ON for {pid} — 15s cooldown started")
+                                    self._emit_event({
+                                        "type": "SIREN_NOTICED",
+                                        "player_id": pid,
+                                    })
+                            else:
+                                self._siren_near_timer.pop(pid, None)
+                        else:
+                            self._siren_near_timer.pop(pid, None)
 
                     self._update_loot_entities(target_dt)
 
-                    # Loot respawn — when all collected, countdown based on difficulty
-                    all_collected = all(loot.collected for loot in self._loot_items) if self._loot_items else False
-                    if all_collected:
+                    # Loot respawn — partial batches based on active count
+                    active_count = sum(1 for loot in self._loot_items if not loot.collected)
+                    if active_count >= 12:
+                        self._loot_respawn_timer = 0.0
+                    elif active_count < 6:
                         self._loot_respawn_timer += target_dt
                         respawn_time = 10.0 if self._difficulty == "EXPERT" else 15.0
                         if self._loot_respawn_timer >= respawn_time:
+                            spawn_count = 12 - active_count
+                            print(f"[LOOT] Active: {active_count}, spawning {spawn_count} new items")
                             self._loot_batch_count = getattr(self, '_loot_batch_count', 0) + 1
-                            total_value = sum(random.randint(self._loot_min, self._loot_max) for _ in self.world.loot_spawn_points)
-                            print(f"[LOOT] Batch {self._loot_batch_count} spawned, {len(self.world.loot_spawn_points)} items, total possible value: {total_value}")
-                            self._spawn_loot_items()
+                            self._spawn_loot_items(count=spawn_count)
                     else:
                         self._loot_respawn_timer = 0.0
+
+                    # Siren charm pull — gentle pull when close + low sanity
+                    self._apply_siren_pull(target_dt)
+
+                    # Tick angel hit cooldown and reset visual attack flag
+                    if self._angel_hit_cooldown > 0:
+                        self._angel_hit_cooldown = max(0.0, self._angel_hit_cooldown - target_dt)
+                    else:
+                        self.angel.attacking = False
 
                     # Damage system
                     self._apply_monster_damage(target_dt)
                     self._update_respawns(target_dt)
 
-                    self.sanity.update(self.players, all_monsters, dt=target_dt, mimics_active=self._mimics_active)
+                    self.sanity.update(self.players, self.siren, self.angel, None, self._mimics, dt=target_dt)
+
+                    # Sanity at zero → slow HP drain (2 HP/sec)
+                    for pid, player in self.players.items():
+                        if not player.alive:
+                            continue
+                        if self._invincibility_timers.get(pid, 0.0) > 0:
+                            continue
+                        if self.sanity.get(pid) <= 0:
+                            dmg = 2 * target_dt
+                            player.take_damage(dmg)
+                            print(f"[SANITY] {pid} at 0 sanity — taking {dmg:.2f} HP damage")
+                            if not player.alive:
+                                self._invincibility_timers[pid] = _DAMAGE_INVINCIBILITY
+
                     self.quota.tick()
                     self._game_timer -= target_dt
                     # Timer debug — print every 10 seconds
@@ -727,7 +859,10 @@ class GameServer:
                 # Check for rooftop escape during QUOTA_MET
                 if self.round_state == "QUOTA_MET" and self.players:
                     for p in self.players.values():
-                        if p.alive and p.y <= 32:
+                        if p.y < 100:
+                            print(f"[ESCAPE] Player {p.player_id} at y={p.y:.1f}, quota={self.quota.collected}/{self.quota.quota}, met={self.quota.collected >= self.quota.quota}")
+                        if p.alive and p.y <= 150:
+                            print(f"[ESCAPE] TRIGGERED — Player {p.player_id} reached y={p.y:.1f}")
                             self.round_state = "ENDING"
                             self._emit_event({
                                 "type": "ROUND_STATE_CHANGED",

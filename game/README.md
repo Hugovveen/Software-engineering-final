@@ -82,8 +82,8 @@ TITLE  -->  LOBBY  -->  PLAYING  -->  QUOTA_MET  -->  ENDING
 
 ### Weeping Angel
 - **Freezes** when any player faces it within 400 px.
-- When unobserved, **creeps toward the nearest player** at 40% of player walk speed.
-- Deals **35 damage** on touch (scaled by difficulty), then freezes for 4 seconds.
+- When unobserved, **creeps toward the nearest player** at 65% of player walk speed.
+- Deals **5 damage** on touch (scaled by difficulty), then freezes for 4 seconds.
 - If off-screen for all players for 8+ seconds, **teleports behind** the nearest player.
 - Server enforces a 2-second global attack cooldown between angel hits.
 
@@ -93,14 +93,6 @@ TITLE  -->  LOBBY  -->  PLAYING  -->  QUOTA_MET  -->  ENDING
 - Deals **12 DPS** to players within 150 px (scaled by difficulty).
 - Has a pulse/cast mechanic on a 6-second cooldown (charm pull is currently disabled; damage and audio remain active).
 - Returns to its guard post if the player retreats beyond 500 px.
-
-### Hollow
-- **Completely invisible** -- no sprite is rendered.
-- Stalks the **nearest player**, prioritizing those who are alone and low on sanity.
-- Avoids the player's **flashlight cone**; circles around to approach from behind.
-- Kills by **dwelling** on top of a player for 3 seconds (180 frames). Deals **8 DPS** within 100 px while dwelling.
-- **Thrown items** redirect it. Three or more simultaneous throws trigger a **group redirect** that repels it 5x longer.
-- Environmental cues betray its presence: footprints, dust particles, and visible breath when very close.
 
 ### Mimic
 - Spawns at **Lights Out** (3 minutes remaining) -- one mimic per player.
@@ -119,7 +111,6 @@ TITLE  -->  LOBBY  -->  PLAYING  -->  QUOTA_MET  -->  ENDING
   - Alone (no teammate within 180 px): 1/sec
   - Siren within 300 px: 15/sec
   - Weeping Angel within 200 px (unfrozen): 5/sec
-  - Hollow within 150 px: 3/sec
   - Mimics active (global): 2/sec
 - **Regenerates** at 1/sec only when no monster is within 400 px.
 - **Low sanity** (below 35): screen shake and vignette darkening.
@@ -200,7 +191,6 @@ The first player to connect sets the difficulty. Expert features faster loot res
 ## Known Issues
 
 - Siren charm-pull mechanic (forced player movement toward siren) is currently **disabled**; only proximity damage and audio lure are active.
-- Hollow position is not sent to clients (by design for invisibility), but environmental effect data (`get_effects`) is not yet wired into the broadcast -- the effects list is always empty in `to_dict()`.
 - Mimic loot-stealing logic returns an empty list every tick (steal behavior is stubbed out).
 - No `requirements.txt` file is present; the only external dependency is `pygame`.
 - The quota week/day cycle (`QUOTA_SCALE`, `DAYS_PER_WEEK`) exists in code but the primary game flow uses a single-round timer model. The weekly escalation path is not fully exercised in normal play.

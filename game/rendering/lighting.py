@@ -69,7 +69,7 @@ class LightingSystem:
         if self._frame_count % FLICKER_INTERVAL == 0:
             self._flicker = 1.0 + random.uniform(-FLICKER_RANGE, FLICKER_RANGE)
 
-        alpha = min(245, DARKNESS_ALPHA + (30 if is_night else 0))
+        alpha = min(250, DARKNESS_ALPHA + (15 if is_night else 0))
         self._overlay.fill((0, 0, 0, 0))
         pygame.draw.rect(self._overlay, (5, 8, 20, alpha),
                          pygame.Rect(0, 0, self.width, self.height))
@@ -78,8 +78,23 @@ class LightingSystem:
             pid      = p.get("id", "")
             sanity   = sanity_map.get(pid, 100.0)
             facing_r = facing_map.get(pid, True)
-            self._cut_cone(p["x"], p["y"], p["w"], p["h"],
-                           camera, facing_r, sanity)
+            flashlight_on = p.get("flashlight_on", True)
+
+            if flashlight_on:
+                self._cut_cone(
+                    float(p.get("x", 0)),
+                    float(p.get("y", 0)),
+                    int(p.get("w", 30)),
+                    int(p.get("h", 48)),
+                    camera, facing_r, sanity,
+                )
+            else:
+                # Flashlight off — nearly invisible, tiny 12px ambient glow
+                sx, sy = camera.world_to_screen(
+                    float(p.get("x", 0)), float(p.get("y", 0)))
+                cx = int(sx + int(p.get("w", 30)) / 2)
+                cy = int(sy + int(p.get("h", 48)) / 2)
+                self._cut_radial(cx, cy, 12, cut_alpha=int(FLASHLIGHT_GLOW_ALPHA))
 
         for (cx, cy, cr) in campfires:
             sx, sy = camera.world_to_screen(cx, cy)
@@ -89,7 +104,7 @@ class LightingSystem:
 
         if self_id:
             sanity = sanity_map.get(self_id, 100.0)
-            if sanity < 35:
+            if sanity < 15:
                 self._draw_vignette(screen, sanity)
 
     # ------------------------------------------------------------------
