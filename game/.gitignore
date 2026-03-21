@@ -6,3 +6,6 @@ __pycache__/
 **/.DS_Store
 *.wav
 image.png
+.DS_Store
+__pycache__/
+*.pyc
