@@ -19,7 +19,7 @@ Players explore a facility, avoid enemies, collect loot samples, and deposit the
 - `Mimic`: roaming/patrol behavior.
 - `Siren`: aggro, casting pulse, charm tiers, pull behavior.
 - `Weeping Angel`: freezes when observed, advances when unobserved.
-- `Hollow`: invisible threat with environmental cues and redirect behavior.
+- `Hollow`: removed from active gameplay; legacy stub retained for import compatibility.
 
 ### Rendering / UX
 - Animated sprites for players and visible enemies.
@@ -132,6 +132,8 @@ python -m unittest tests/test_layout_generator.py -v
 python -m unittest tests/test_integration.py -v
 ```
 
+`tests/test_integration.py` currently contains legacy suites for removed/refactored enemy APIs; those cases are explicitly marked as skipped, while active quota integration coverage runs and passes.
+
 ### Manual acceptance checklist
 - Server starts without crash.
 - At least one client can join and move.
@@ -145,7 +147,7 @@ python -m unittest tests/test_integration.py -v
 
 - Balance tuning (enemy aggressiveness, lighting intensity, sanity pressure) is still configurable and may require playtest iteration.
 - Some content flows still rely on placeholder audio/UX polish.
-- Alternate client (`client/game_client_1.py`) is retained for experimentation and may differ slightly from main client behavior.
+- Team contributions table below is still a template and should be filled before submission.
 
 ## 8) Team Contributions (Fill Before Submission)
 

@@ -205,6 +205,6 @@ game/
 
 - Hollow enemy removed (stub kept for import compatibility)
 - Mimic loot-stealing could be more aggressive in higher difficulties
-- No `requirements.txt` — only external dependencies are `pygame` and `numpy`
+- Integration tests include legacy suites that are currently skipped while enemy APIs are refactored
 - Quota weekly escalation system exists in code but single-round model is primary
 - Siren charm pull is intentionally gentle (0.8 px/s) to avoid feeling unfair

@@ -15,11 +15,6 @@ from __future__ import annotations
 
 import argparse
 
-from client.game_client import GameClient
-from enemy_preview import run_preview
-from level_layout_editor import run_layout_editor
-from server.game_server import GameServer
-
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for mode selection."""
@@ -54,17 +49,25 @@ def main() -> None:
     args = parse_args()
 
     if args.mode == "server":
+        from server.game_server import GameServer
+
         server = GameServer(host=args.host, port=args.port)
         server.run()
         return
 
     if args.mode == "preview":
+        from enemy_preview import run_preview
+
         run_preview()
         return
 
     if args.mode == "editor":
+        from level_layout_editor import run_layout_editor
+
         run_layout_editor()
         return
+
+    from client.game_client import GameClient
 
     client = GameClient(host=args.host, port=args.port)
     client.run()
